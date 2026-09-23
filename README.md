@@ -63,7 +63,7 @@
 
 ### 方式一：`.deb` 一键安装（推荐）
 
-从 [Releases](../../releases) 下载最新的 `.deb`（例如 `chuang_1.1.2_all.deb`）：
+从 [Releases](../../releases) 下载最新的 `.deb`（例如 `chuang_1.1.7_all.deb`）：
 
 ```bash
 sudo dpkg -i chuang_*_all.deb
@@ -71,6 +71,8 @@ sudo apt-get -f install      # 万一缺依赖，补一下
 ```
 
 装完在应用菜单里搜「窗」，或终端输入 `chuang`。卸载：`sudo apt remove chuang`。
+
+> 这些包由 CI 自动打、自动挂：版本号一涨，`.deb` 与 `SHA256SUMS` 就随 Release 一起发出。
 
 ### 方式二：从源码安装
 

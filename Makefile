@@ -1,5 +1,5 @@
 # 常用任务：make help 看一眼
-.PHONY: help run city install deb screenshots check clean uninstall
+.PHONY: help run city install deb release release-dry screenshots check clean uninstall
 
 PY ?= python3
 
@@ -10,6 +10,8 @@ help:
 	@echo "  make screenshots  重新生成 README 里的截图"
 	@echo "  make check        语法检查 + 出一张测试图"
 	@echo "  make deb          打包 .deb（产物在 packaging/out/）"
+	@echo "  make release      发版：打 tag → CI 打包 → 挂到 Release（packaging/release.sh）"
+	@echo "  make release-dry  发版前的检查（--dry-run，什么都不改）"
 	@echo "  make install      从源码安装（需要 sudo）"
 	@echo "  make uninstall    卸载源码安装"
 	@echo "  make clean        清掉 pycache 与打包中间产物"
@@ -30,6 +32,12 @@ check:
 
 deb:
 	./packaging/build-deb.sh
+
+release:
+	./packaging/release.sh
+
+release-dry:
+	./packaging/release.sh --dry-run
 
 install:
 	./install.sh

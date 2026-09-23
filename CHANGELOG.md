@@ -2,6 +2,34 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.7] — 2026-09-23
+
+**发版这件事，现在只剩 push**
+
+以前每次发新版都要手动打 tag、手动把 `.deb` 拖到 Release 上，一步忘了就少一个包。
+这一版把整条链路交给 CI，另附一个在本机就能跑的脚本。
+
+**push 就发版**
+
+- 工作流 `.github/workflows/release.yml` 现在也盯着 **master 上的提交**：只要
+  `chuang/__init__.py` 里的版本号比现有 tag 新，就自动打 tag（`v1.1.7`）、打包 `.deb`、
+  建 Release 并把它挂上去，Release 说明直接取自本文件里对应版本的段落。
+- **普通提交不会误发版**：版本号没涨、或这个 tag 早就发过时，CI 只打包自检、把 `.deb`
+  留在本次运行的 Artifacts 里，不碰 Release。临时把版本号改小来测「检查更新」的界面，
+  不会意外发出去。
+- 推 tag、以及在 Actions 页面手动运行，仍然都能发版；手动那条用来补传 `.deb` 或重跑
+  失败的构建。
+- 打包后多两道自检：`.deb` 里的版本号必须与 `chuang/__init__.py` 一致、包不能是空的。
+  Release 上除 `.deb` 外还多一份 `SHA256SUMS`。
+
+**本机也能一条命令发版：`./packaging/release.sh`**
+
+- 默认走 CI：先校验版本号比现有 tag 新、`CHANGELOG.md` 里有对应段落、工作树干净、
+  本地已推送到 `origin`，然后打 tag 推上去、等 CI 跑完，最后把 Release 上的 `.deb`
+  下载回来验一遍版本号与包结构。
+- `--local` 不走 CI：本地打包，用 GitHub CLI（`gh`）直接建 Release 并上传，适合补传或换包。
+- `--dry-run` 只做检查，什么都不改。`make release` 是它的快捷方式。
+
 ## [1.1.6] — 2026-09-23
 
 **街上：树、车流、人的数量，以及"空格"**

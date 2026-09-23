@@ -46,6 +46,27 @@ python3 tools/make_screenshots.py                          # 画风变了就更�
 ./packaging/build-deb.sh                                   # 打包是否仍然通过
 ```
 
+## 发布新版本
+
+版本号只有一处：`chuang/__init__.py` 的 `__version__`。发版前改它，并在 `CHANGELOG.md`
+顶部加一段同名的小节（Release 说明就取这一段）。
+
+**平时：push 到 master 就完了。** `.github/workflows/release.yml` 会读版本号，发现它比
+现有 tag 新时自动打 tag `vX.Y.Z`、打包 `.deb`、建 Release，把 `.deb` 与 `SHA256SUMS`
+一起挂上去。版本号没涨的普通提交只打包自检，产物留在那次运行的 Artifacts 里，不发版。
+
+想在本机把整条路盯着走完：
+
+```bash
+./packaging/release.sh --dry-run   # 只检查：版本涨了没、CHANGELOG 有没有这一段、树干不干净
+./packaging/release.sh             # 打 tag 推上去 → 等 CI → 把 Release 上的 .deb 下回来验一遍
+./packaging/release.sh --local     # 不走 CI：本地打包，用 gh 直接建 Release 并上传（补传/换包）
+```
+
+需要 GitHub CLI（`gh`）已登录（`gh auth login`）和能推送的 git 凭据
+（`gh auth setup-git` 一条就够）。要补发或重跑，也可以去 Actions 页面手动运行
+「发布 .deb」这个工作流。
+
 ## 约定
 
 - **不要引入第三方 Python 库**：这个项目的一个卖点就是"只用系统自带的东西"。
