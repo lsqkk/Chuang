@@ -39,7 +39,15 @@ class Actor:
 
 
 def roster(seed: int) -> list[Actor]:
-    """一整天的固定班底：谁在路上、开多快、往哪边，由种子决定。"""
+    """一整天的固定班底：谁在路上、开多快、往哪边，由种子决定。
+
+    速度单位是"屏幕宽度/秒"，按真实观感分级（以前行人几乎和车一样快，
+    看上去像在赶车）：
+      · 汽车 ~9-13 秒穿画面（0.080-0.115）
+      · 公交 ~14-18 秒（0.055-0.072）
+      · 自行车 ~20-28 秒（0.036-0.050）
+      · 行人 ~53-83 秒（0.012-0.019）——散步的速度，比车慢一个数量级
+    """
     rnd = random.Random(seed)
     actors: list[Actor] = []
     # 车道：远处那条向左开，近处那条向右开
@@ -48,25 +56,23 @@ def roster(seed: int) -> list[Actor]:
         actors.append(Actor(
             kind="car",
             depth=rnd.uniform(0.45, 0.62) if not near else rnd.uniform(0.70, 0.85),
-            speed=rnd.uniform(0.030, 0.055) * (1 if near else -1),
+            speed=rnd.uniform(0.080, 0.115) * (1 if near else -1),
             phase=rnd.random(),
             when="always",
             umbrella=False,
             tone=rnd.uniform(0.75, 1.15),
             bob=0.0,
         ))
-    actors.append(Actor("bus", rnd.uniform(0.48, 0.55), rnd.uniform(-0.026, -0.020),
+    actors.append(Actor("bus", rnd.uniform(0.48, 0.55), rnd.uniform(-0.072, -0.055),
                         rnd.random(), "always", False, 0.9, 0.0))
-    actors.append(Actor("bus", rnd.uniform(0.72, 0.80), rnd.uniform(0.022, 0.028),
+    actors.append(Actor("bus", rnd.uniform(0.72, 0.80), rnd.uniform(0.055, 0.072),
                         rnd.random(), "always", False, 1.0, 0.0))
     # 骑车的人：晴天多，雨雪少（靠 alpha 淡出）
-    # 速度单位是"屏幕宽度/秒"：行人横穿画面约 30-45 秒，自行车约 15-22 秒，
-    # 汽车约 20-30 秒——和真实街景的观感一致。
     for i in range(3):
         actors.append(Actor(
             kind="cyclist",
             depth=rnd.uniform(0.60, 0.86),
-            speed=rnd.uniform(0.045, 0.070) * (1 if rnd.random() < 0.5 else -1),
+            speed=rnd.uniform(0.036, 0.050) * (1 if rnd.random() < 0.5 else -1),
             phase=rnd.random(),
             when="day",
             umbrella=False,
@@ -78,7 +84,7 @@ def roster(seed: int) -> list[Actor]:
         actors.append(Actor(
             kind="ped",
             depth=rnd.uniform(0.86, 1.0),
-            speed=rnd.uniform(0.022, 0.032) * (1 if rnd.random() < 0.5 else -1),
+            speed=rnd.uniform(0.012, 0.019) * (1 if rnd.random() < 0.5 else -1),
             phase=rnd.random(),
             when=rnd.choice(("always", "always", "always", "day", "night")),
             umbrella=rnd.random() < 0.8,

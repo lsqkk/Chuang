@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import threading
 import time as _time
@@ -42,6 +44,20 @@ headerbar windowtitle:backdrop { color: #aab4c8; }
 headerbar button { color: #dfe6f5; }
 popover > contents { background: rgba(18, 22, 33, 0.97); }
 """
+
+
+def escape_closes(window: Gtk.Window) -> None:
+    """按 Esc 关掉这个对话框（GTK4 的裸窗口默认不认 Esc）。"""
+    keys = Gtk.EventControllerKey()
+
+    def on_key(_c, keyval, _code, _state):
+        if Gdk.keyval_name(keyval) == "Escape":
+            window.destroy()
+            return True
+        return False
+
+    keys.connect("key-pressed", on_key)
+    window.add_controller(keys)
 
 
 class CloseDialog(Gtk.Window):
@@ -85,6 +101,167 @@ class CloseDialog(Gtk.Window):
 
     def _pick(self, _btn, choice: str):
         self.on_choice(choice, self.remember.get_active())
+        self.destroy()
+
+
+class DetailDialog(Gtk.Window):
+    """把一段话完整、可选中、可复制地摆出来。
+
+    toast（屏幕下方那条提示）只能看不能抄，所以凡是"路径 / 命令 / 报错"
+    这类需要照着办或贴到 issue 里的内容，都放这个窗里。
+    """
+
+    def __init__(self, parent, title: str, body: str, copy_label: str = "复制全部"):
+        super().__init__(transient_for=parent, modal=True, title=title,
+                         default_width=560, default_height=340)
+        self.body = body
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(
+            title=title, subtitle="可以选中，也可以一键复制"))
+        box.append(header)
+
+        view = Gtk.TextView(editable=False, cursor_visible=False,
+                            wrap_mode=Gtk.WrapMode.WORD_CHAR, monospace=True,
+                            top_margin=10, bottom_margin=10,
+                            left_margin=12, right_margin=12)
+        view.get_buffer().set_text(body)
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.set_child(view)
+        box.append(scroller)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
+                      margin_top=10, margin_bottom=12,
+                      margin_start=12, margin_end=12)
+        row.set_halign(Gtk.Align.END)
+        self.copy_button = Gtk.Button(label=copy_label)
+        self.copy_button.add_css_class("suggested-action")
+        self.copy_button.connect("clicked", self._copy)
+        close = Gtk.Button(label="关闭")
+        close.connect("clicked", lambda *_: self.destroy())
+        row.append(self.copy_button)
+        row.append(close)
+        box.append(row)
+        self.set_child(box)
+        escape_closes(self)
+
+    def _copy(self, _btn=None):
+        display = Gdk.Display.get_default()
+        if display is not None:
+            display.get_clipboard().set(self.body)
+            self.copy_button.set_label("已复制 ✓")
+
+
+class ChoiceDialog(Gtk.Window):
+    """一个简单的问题：给几个按钮，选哪个就回调哪个。"""
+
+    def __init__(self, parent, title: str, body: str, options):
+        super().__init__(transient_for=parent, modal=True, title=title,
+                         resizable=False)
+        self.on_choice = None
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                      margin_top=18, margin_bottom=16,
+                      margin_start=20, margin_end=20)
+        heading = Gtk.Label(xalign=0)
+        heading.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
+        box.append(heading)
+        label = Gtk.Label(label=body, xalign=0, wrap=True, max_width_chars=44)
+        label.add_css_class("dim-label")
+        box.append(label)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.set_halign(Gtk.Align.END)
+        for text, value, suggested in options:
+            btn = Gtk.Button(label=text)
+            if suggested:
+                btn.add_css_class("suggested-action")
+            btn.connect("clicked", self._pick, value)
+            row.append(btn)
+        box.append(row)
+        self.set_child(box)
+        escape_closes(self)
+
+    def _pick(self, _btn, value):
+        self.destroy()
+        if self.on_choice is not None:
+            self.on_choice(value)
+
+
+class TimeTravelDialog(Gtk.Window):
+    """跳到任意一天任意一刻（拖长卷只能左右挪，这里可以一步到位）。"""
+
+    def __init__(self, parent, when, tzinfo, on_pick, on_now):
+        super().__init__(transient_for=parent, modal=True, title="跳到某一刻",
+                         default_width=380, default_height=430)
+        self.tzinfo = tzinfo
+        self.on_pick = on_pick
+        self.on_now = on_now
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(
+            title="跳到某一刻", subtitle="选好日期与时间，窗会停在那里"))
+        box.append(header)
+
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                        margin_top=10, margin_bottom=14,
+                        margin_start=16, margin_end=16)
+
+        self.calendar = Gtk.Calendar()
+        self.calendar.set_show_week_numbers(False)
+        try:
+            self.calendar.select_day(GLib.DateTime.new_local(
+                when.year, when.month, when.day, 12, 0, 0.0))
+        except Exception:
+            pass
+        inner.append(self.calendar)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.append(Gtk.Label(label="时间"))
+        self.hour = Gtk.SpinButton.new_with_range(0, 23, 1)
+        self.hour.set_value(when.hour)
+        self.minute = Gtk.SpinButton.new_with_range(0, 59, 1)
+        self.minute.set_value(when.minute)
+        row.append(self.hour)
+        row.append(Gtk.Label(label=":"))
+        row.append(self.minute)
+        inner.append(row)
+
+        hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=36,
+                         label="提示：预览时窗里的天色停在你选的那一刻，"
+                               "但街上的人车、天上的云照常动。")
+        hint.add_css_class("dim-label")
+        inner.append(hint)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        actions.set_halign(Gtk.Align.END)
+        now_btn = Gtk.Button(label="回到此刻")
+        now_btn.connect("clicked", self._now)
+        cancel = Gtk.Button(label="取消")
+        cancel.connect("clicked", lambda *_: self.destroy())
+        go = Gtk.Button(label="跳到这一刻")
+        go.add_css_class("suggested-action")
+        go.connect("clicked", self._go)
+        for b in (now_btn, cancel, go):
+            actions.append(b)
+        inner.append(actions)
+
+        box.append(inner)
+        self.set_child(box)
+        escape_closes(self)
+
+    def _picked(self):
+        day = self.calendar.get_date()
+        from datetime import datetime
+        return datetime(day.get_year(), day.get_month(), day.get_day_of_month(),
+                        int(self.hour.get_value()), int(self.minute.get_value()),
+                        tzinfo=self.tzinfo)
+
+    def _go(self, _btn=None):
+        self.on_pick(self._picked())
+        self.destroy()
+
+    def _now(self, _btn=None):
+        self.on_now()
         self.destroy()
 
 
@@ -137,6 +314,7 @@ class CityDialog(Gtk.Window):
 
         box.append(inner)
         self.set_child(box)
+        escape_closes(self)
 
         self._debounce = None
         self.entry.connect("changed", self._on_changed)
@@ -233,6 +411,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.available_release = None
         self._checking_update = False
         self._really_quit = False
+        self._installing = False
+        self._wallpaper_set_by_us = False   # 本进程有没有成功把壁纸换成我们的
         self._toggle_handlers = {}          # 勾选项名字 → 真正的处理器（便于"设为"某状态）
         self._pin_ok = self._init_pin()
         # 调试钩子：CHUANG_TIME=2026-09-23T18:40 / CHUANG_WEATHER=63:95:9:180
@@ -266,6 +446,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         # 壁纸立刻来一次：开机后桌面还挂着"上次关机那一刻"的图，
         # 越早换掉越好（以前要等 2.5 秒，而且只有一次机会）。
         self._next_wallpaper = _time.monotonic() + 0.4
+        self._next_wallpaper_check = _time.monotonic() + 2.0
         self._last_clock = self._now()
         self._timer = GLib.timeout_add(25, self._tick)
         self.connect("close-request", self._on_close)
@@ -453,9 +634,10 @@ class ChuangWindow(Adw.ApplicationWindow):
         if self.available_release is not None:
             rel = self.available_release
             up = Gio.Menu()
-            up.append("打开发布页", "win.openreleases")
             if rel.deb_url:
-                up.append("下载 .deb 安装包", "win.downloaddeb")
+                up.append(f"下载并安装 {rel.tag}", "win.installdeb")
+                up.append("只下载 .deb 安装包", "win.downloaddeb")
+            up.append("打开发布页", "win.openreleases")
             up.append("跳过这个版本", "win.skipversion")
             menu.append_submenu(f"有新版本 {rel.tag} · 查看", up)
 
@@ -488,6 +670,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         look = Gio.Menu()
         look.append("窗口置顶", "win.pin")
         look.append("显示此刻的事实（空格）", "win.info")
+        look.append("跳到某天某时…", "win.gotodatetime")
         menu.append_submenu("看", look)
 
         # 四、开机与关窗：三个"待着的方式"收在一起
@@ -509,6 +692,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         about.append("问题反馈 / 提个建议（GitHub）", "win.reportissue")
         about.append("作者的主页（GitHub）", "win.authormain")
         about.append("关于窗", "win.about")
+        about.append("重新启动「窗」", "win.restart")
         menu.append_submenu("关于与帮助", about)
 
         quit_item = Gio.Menu()
@@ -582,6 +766,9 @@ class ChuangWindow(Adw.ApplicationWindow):
         add("skipversion", self._act_skip_version)
         add("reportissue", self._act_report_issue)
         add("authormain", self._act_author_main)
+        add("installdeb", self._act_install_deb)
+        add("gotodatetime", self._act_goto_datetime)
+        add("restart", self._act_restart)
         add("quit", self._act_quit)
         add("about", self._act_about)
 
@@ -725,6 +912,7 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _wallpaper_done(self, ok: bool, msg: str, slot: int, quiet: bool = False) -> bool:
         self.config.wallpaper_slot = slot
         self.config.save()          # 记下槽位，只在"桌面挂着别人的图"时当兜底
+        self._wallpaper_set_by_us = bool(ok)
         # 自动跟随不弹提示，否则提示会一直挂在屏幕上
         if not quiet or not ok:
             self.toast(msg, 4.5 if ok else 6.0)
@@ -925,10 +1113,167 @@ class ChuangWindow(Adw.ApplicationWindow):
 
     def _download_done(self, ok: bool, info: str) -> bool:
         if ok:
-            self.toast(f"已下载到 {info} · 安装：sudo dpkg -i {info}", 12.0)
+            self.toast_detailed(
+                "安装包已经下好了", 14.0,
+                f"安装包：{info}\n\n手动安装（复制到终端里跑）：\n"
+                f"    sudo apt-get install -y -- \"{info}\"\n\n"
+                "或者在菜单里点「下载并安装」，「窗」会自己开一个终端帮你装。")
         else:
-            self.toast(f"下载失败：{info}", 6.0)
+            self.toast_detailed("下载失败", 8.0,
+                                f"下载失败：{info}\n\n发布页：{upmod.RELEASES_URL}")
         return False
+
+    # ------------------------------------------------------------------
+    # 下载并直接安装新版本
+    # ------------------------------------------------------------------
+    def _act_install_deb(self, *_):
+        """下载新版本的 .deb，然后开一个终端用 sudo 装好（会弹密码）。"""
+        rel = self.available_release
+        if rel is None or not rel.deb_url:
+            self.toast("没找到可下载的安装包，我给你打开发布页", 5.0)
+            self._act_open_releases()
+            return
+        if getattr(self, "_installing", False):
+            self.toast("上一次安装还没结束，稍等一下…", 3.0)
+            return
+        self._installing = True
+        target = wallmod.CACHE / "updates" / (rel.deb_name or "chuang-update.deb")
+        self.toast(f"正在下载 {rel.deb_name}…（大约几 MB）", 5.0)
+
+        def worker():
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                req = urllib.request.Request(rel.deb_url,
+                                             headers={"User-Agent": upmod.UA})
+                with urllib.request.urlopen(req, timeout=180) as resp, \
+                        open(target, "wb") as fh:
+                    shutil.copyfileobj(resp, fh)
+                GLib.idle_add(self._install_ready, rel, str(target))
+            except Exception as exc:
+                GLib.idle_add(self._install_download_failed, rel, str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="chuang-install").start()
+
+    def _install_download_failed(self, rel, why: str) -> bool:
+        self._installing = False
+        self.toast_detailed("下载安装包失败", 9.0,
+                            f"下载 {rel.tag} 的安装包失败：{why}\n\n"
+                            f"可以到发布页手动下载：{upmod.RELEASES_URL}")
+        return False
+
+    def _install_ready(self, rel, path: str) -> bool:
+        launcher = self._installer_launcher(path)
+        if launcher is None:
+            self._installing = False
+            self.toast_detailed(
+                "没有可用的安装方式", 12.0,
+                "没找到终端程序，也没法弹授权框。\n\n"
+                f"安装包已经下载到：\n    {path}\n\n"
+                "在终端里跑这一行就装好了：\n"
+                f"    sudo apt-get install -y -- \"{path}\"")
+            return False
+        try:
+            subprocess.Popen(launcher, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except Exception as exc:
+            self._installing = False
+            self.toast_detailed("打不开安装终端", 9.0,
+                                f"启动安装程序失败：{exc}\n\n"
+                                f"安装包在：{path}\n"
+                                f"手动安装：sudo apt-get install -y -- \"{path}\"")
+            return False
+        self.toast(f"已经开了个终端在装 {rel.tag}，输入 sudo 密码就好", 8.0)
+        self._watch_install(rel)
+        return False
+
+    @staticmethod
+    def _installer_launcher(path: str):
+        """怎么装：优先开终端跑 sudo（看得见过程、能输密码），否则返回 None。"""
+        script = (
+            "echo '窗 · Chuang —— 正在安装新版本'\n"
+            "echo\n"
+            f"sudo apt-get install -y -- {shlex.quote(path)}\n"
+            "rc=$?\n"
+            "echo\n"
+            "if [ $rc -eq 0 ]; then\n"
+            "  echo '✓ 安装完成。回到「窗」的窗口，它会问你要不要重启。'\n"
+            "else\n"
+            "  echo \"× 安装失败（退出码 $rc），上面的输出就是原因。\"\n"
+            "fi\n"
+            "echo\n"
+            "printf '按回车关闭这个窗口… '\n"
+            "read _\n")
+        term = shutil.which("gnome-terminal")
+        if term:
+            return [term, "--title=安装「窗」更新", "--", "bash", "-c", script]
+        term = shutil.which("x-terminal-emulator") or shutil.which("xterm")
+        if term:
+            return [term, "-e", "bash", "-c", script]
+        return None
+
+    def _watch_install(self, rel) -> None:
+        """盯着 dpkg 里的版本号：装好了就提示重启。"""
+        self._install_target = upmod.parse_version(rel.tag)
+        self._install_deadline = _time.monotonic() + 240
+        GLib.timeout_add(2000, self._poll_install)
+
+    def _poll_install(self) -> bool:
+        ver = upmod.installed_deb_version()
+        parsed = upmod.parse_version(ver)
+        if ver and parsed and not upmod.is_newer(self._install_target, parsed):
+            self._installing = False
+            self.available_release = None
+            self._refresh_menu()
+            self.toast(f"已经装好 {ver} 了", 8.0)
+            dialog = ChoiceDialog(
+                self, "新版本已经装好",
+                f"现在是 {ver}。重启「窗」就能用上新版本（当前的窗口会关掉，"
+                "壁纸最多停一两秒就接上）。",
+                [("稍后", "later", False), ("现在重启", "restart", True)])
+            dialog.on_choice = self._on_restart_answer
+            dialog.present()
+            return False
+        if _time.monotonic() > self._install_deadline:
+            # 大概率是用户在终端里放弃了；安静收场，别再打扰
+            self._installing = False
+            return False
+        return True
+
+    def _on_restart_answer(self, value: str):
+        if value == "restart":
+            self._restart_app()
+
+    def _act_restart(self, *_):
+        self._confirm_restart()
+
+    def _confirm_restart(self):
+        dialog = ChoiceDialog(self, "重启「窗」？",
+                              "窗口会关掉再自动打开，壁纸最多停一两秒。",
+                              [("取消", "later", False), ("现在重启", "restart", True)])
+        dialog.on_choice = self._on_restart_answer
+        dialog.present()
+
+    def _restart_app(self):
+        """退出自己，并在自己真正退出之后再拉起新的那个进程。
+
+        必须等旧进程退出：单实例锁（flock）还握在手上，抢在它前面启动
+        会被当成"第二个实例"而退场。
+        """
+        argv = self.app.installed_launcher()
+        wait = f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 0.2; done; "
+        script = wait + "exec " + " ".join(shlex.quote(part) for part in argv)
+        try:
+            subprocess.Popen(["setsid", "sh", "-c", script],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except Exception as exc:
+            self.toast_detailed("自动重启没成功", 8.0,
+                                f"启动新进程失败：{exc}\n"
+                                "手动打开一次「窗」就好（终端里敲 chuang）。")
+            return
+        self.config.save()
+        self._really_quit = True
+        self.app.quit()
 
     @staticmethod
     def _download_dir():
@@ -997,7 +1342,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.activate(name, target)
 
     def _act_autostart(self, want: bool):
-        cfgmod.set_autostart(want, self.app.installed_exec(),
+        cfgmod.set_autostart(want, self.app.installed_launcher(),
                              hidden=bool(self.config.autostart_hidden))
         self.config.autostart = want
         self.config.save()
@@ -1011,7 +1356,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.config.autostart_hidden = want
         self.config.save()
         if self.config.autostart:
-            cfgmod.set_autostart(True, self.app.installed_exec(), hidden=want)
+            cfgmod.set_autostart(True, self.app.installed_launcher(), hidden=want)
         self.toast("开机时直接进托盘，不弹窗" if want else "开机时正常打开窗口", 3.5)
 
     def _act_about(self, *_):
@@ -1102,7 +1447,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._scene_key = None
         self._ribbon_key = None
         self.painter._skyline.clear()
-        self.painter.ui.preview_dt = None
+        self._set_preview(None)
         self.painter.ui.ribbon_key = None
         self.painter.ui.ribbon_surface = None
         self.title_widget.set_subtitle(location.label)
@@ -1120,6 +1465,31 @@ class ChuangWindow(Adw.ApplicationWindow):
         if self._fake_time is not None:
             return self._fake_time
         return self.engine.local_now()
+
+    def _set_preview(self, when):
+        """进入 / 更新 / 退出「时间旅行」预览。
+
+        记下进入预览那一刻的墙钟：天色停在预览时刻，但街上的人车要继续走
+        （见 render._draw_street）——云本来就是墙钟驱动的，人车也该一样。
+        """
+        ui = self.painter.ui
+        if when is None:
+            ui.preview_dt = None
+            ui.preview_started = None
+            ui.dragging = False
+        else:
+            if ui.preview_dt is None:
+                ui.preview_started = self._now()
+            ui.preview_dt = when
+        self._scene_key = None
+        self.area.queue_draw()
+
+    def _act_goto_datetime(self, *_):
+        """选一个日期 + 时刻跳过去（比来回拖长卷省事）。"""
+        ui = self.painter.ui
+        when = ui.preview_dt or self._now()
+        TimeTravelDialog(self, when, self.engine._tzinfo,
+                         self._set_preview, lambda: self._set_preview(None)).present()
 
     def _has_precip(self) -> bool:
         sc = self._scene
@@ -1177,15 +1547,37 @@ class ChuangWindow(Adw.ApplicationWindow):
         if minute != self._last_minute:
             self._last_minute = minute
             self._scene_key = None
-            if self.get_visible():
-                self.title_widget.set_subtitle(
-                    f"{self.config.location.label} · {clock.strftime('%H:%M')}")
+            # 标题上的时间要一直跟着走：以前只在窗口可见时更新，收进托盘
+            # 再打开就会停在旧的一分钟上（看起来像"时间没刷新"）。
+            self.title_widget.set_subtitle(
+                f"{self.config.location.label} · {clock.strftime('%H:%M')}")
             self.weather.maybe_refresh()
         # 壁纸跟随：按秒表走，不受"分钟变化"限制（收进托盘也照常更新）
         if self.config.wallpaper_auto and now >= self._next_wallpaper:
             step = int(self.config.wallpaper_interval or WALLPAPER_INTERVAL)
             self._next_wallpaper = now + max(5, step)
             self.apply_wallpaper(quiet=True)
+        # 兜底自查：桌面挂着的那张如果比另一张还旧，说明上一次换图没被接受
+        # （URI 没变、GNOME 没重读、dconf 抽风……），立刻把新的那张顶上。
+        if self.config.wallpaper_auto and now >= self._next_wallpaper_check:
+            self._next_wallpaper_check = now + 5.0
+            shown = wallmod.shown_uri()
+            if shown and not wallmod.is_our_uri(shown):
+                # 桌面挂着别人的图：多半是用户自己去「外观」里换了壁纸。
+                # 那就别再抢（抢起来就是"两个东西打架"），把跟随关掉并说明。
+                if self._wallpaper_set_by_us:
+                    self._wallpaper_set_by_us = False
+                    self.set_toggle("wallpaperauto", False)
+                    self.toast_detailed(
+                        "你换了壁纸，「窗」就不再自动跟着了", 9.0,
+                        "检测到桌面壁纸已经换成别的了，所以「窗」停手，不再每 10 秒覆盖它。\n\n"
+                        "想让它继续跟着此刻走：菜单 → 桌面壁纸 → 壁纸跟随此刻。\n"
+                        "想保留刚才那张天空：不用做什么。")
+            else:
+                stale = wallmod.stale_shown_slot()
+                if stale is not None:
+                    wallmod.set_wallpaper(wallmod.SLOTS[stale])
+                    self._next_wallpaper = 0.0    # 顺手重画一张最新的
         # 画面只在窗口可见时重绘；有降水画得勤一点，安静时省电
         if self.get_visible():
             interval = 0.07 if self._has_precip() else 0.10
@@ -1210,8 +1602,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         if ui.dragging:
             t = self.painter.ribbon_time_at(ui, x)
             if t is not None:
-                ui.preview_dt = t
-                self.area.queue_draw()
+                self._set_preview(t)
             return
         over = self._over_ribbon(x, y)
         self.area.set_cursor_from_name("ew-resize" if over else None)
@@ -1226,21 +1617,24 @@ class ChuangWindow(Adw.ApplicationWindow):
 
     def _on_press(self, gesture, _n, x, y):
         ui = self.painter.ui
+        tx, ty, tw, th = ui.toast_rect
+        if (ui.toast_detail and tw > 0
+                and tx <= x <= tx + tw and ty <= y <= ty + th):
+            self._show_detail("详情", ui.toast_detail)
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            return
         cx, cy, cw, ch = ui.chip_rect
         if cw > 0 and cx <= x <= cx + cw and cy <= y <= cy + ch:
-            ui.preview_dt = None
-            ui.dragging = False
-            self._scene_key = None
-            self.area.queue_draw()
+            self._set_preview(None)
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             return
         if self._over_ribbon(x, y):
             ui.dragging = True
             t = self.painter.ribbon_time_at(ui, x)
             if t is not None:
-                ui.preview_dt = t
+                self._set_preview(t)
+                ui.dragging = True          # _set_preview 会清掉拖动标记，这里补回来
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            self.area.queue_draw()
 
     def _on_release(self, _g, _n, _x, _y):
         self.painter.ui.dragging = False
@@ -1252,9 +1646,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         from datetime import timedelta
         base = ui.preview_dt or ui.hover_dt or self._now()
         step = 10 if dy > 0 else -10
-        ui.preview_dt = base + timedelta(minutes=step)
-        self._scene_key = None
-        self.area.queue_draw()
+        self._set_preview(base + timedelta(minutes=step))
         return True
 
     def _on_key(self, _c, keyval, _code, _state):
@@ -1267,25 +1659,19 @@ class ChuangWindow(Adw.ApplicationWindow):
             return True
         if name == "Escape":
             if ui.preview_dt is not None:
-                ui.preview_dt = None
-                self._scene_key = None
-                self.area.queue_draw()
+                self._set_preview(None)
                 return True
             if self.is_fullscreen():
                 self.unfullscreen()
                 return True
             return False
         if name in ("Home", "KP_Home"):
-            ui.preview_dt = None
-            self._scene_key = None
-            self.area.queue_draw()
+            self._set_preview(None)
             return True
         if name in ("Left", "Right", "KP_Left", "KP_Right"):
             base = ui.preview_dt or self._now()
             step = -10 if "Left" in name else 10
-            ui.preview_dt = base + timedelta(minutes=step)
-            self._scene_key = None
-            self.area.queue_draw()
+            self._set_preview(base + timedelta(minutes=step))
             return True
         return False
 
@@ -1298,7 +1684,18 @@ class ChuangWindow(Adw.ApplicationWindow):
     def toast(self, text: str, seconds: float = 3.0):
         self.painter.ui.toast = text
         self.painter.ui.toast_until = _time.time() + seconds
+        self.painter.ui.toast_detail = ""
         self.area.queue_draw()
+
+    def toast_detailed(self, text: str, seconds: float, detail: str):
+        """短提示 + 可复制的完整内容：点一下提示条就打开详情窗。"""
+        self.painter.ui.toast = text
+        self.painter.ui.toast_until = _time.time() + seconds
+        self.painter.ui.toast_detail = detail
+        self.area.queue_draw()
+
+    def _show_detail(self, title: str, body: str):
+        DetailDialog(self, title, body).present()
 
     def first_run_tips(self):
         if self.config.first_run_done:
@@ -1354,9 +1751,9 @@ class ChuangApp(Adw.Application):
         所以每次启动都对一遍，需要就悄悄改回来。"""
         if not self.config.autostart:
             return
-        exe = self.installed_exec()
-        if cfgmod.autostart_needs_repair(exe, bool(self.config.autostart_hidden)):
-            cfgmod.set_autostart(True, exe, hidden=bool(self.config.autostart_hidden))
+        argv = self.installed_launcher()
+        if cfgmod.autostart_needs_repair(argv, bool(self.config.autostart_hidden)):
+            cfgmod.set_autostart(True, argv, hidden=bool(self.config.autostart_hidden))
 
     def _forget_own_wallpaper(self) -> None:
         """早期版本会把"我们自己画的天空"当成"用户原来的壁纸"记下来，
@@ -1369,8 +1766,8 @@ class ChuangApp(Adw.Application):
             self.config.prev_wallpaper_dark = ""
             self.config.save()
 
-    def installed_exec(self) -> str:
-        """这个程序"此刻真正的命令行"，写给自启项用。
+    def installed_launcher(self) -> list:
+        """启动"这个程序"真正的 argv：自启项和"重启自己"都用它。
 
         优先用与当前代码同一份安装、又躺在 PATH 上的 `chuang` 命令
         （.deb 装成 /usr/bin/chuang，源码安装装成 /usr/local/bin/chuang）；
@@ -1383,12 +1780,16 @@ class ChuangApp(Adw.Application):
             path = Path(cand)
             try:
                 if path.exists() and path.resolve() == launcher.resolve():
-                    return cand
+                    return [cand]
             except OSError:
                 continue
         if launcher.exists():
-            return str(launcher)
-        return f"{sys.executable} {launcher}"
+            return [str(launcher)]
+        return [sys.executable, str(launcher)]
+
+    def installed_exec(self) -> str:
+        """给 .desktop 文件用的 Exec= 值（每个参数各自加引号）。"""
+        return " ".join(cfgmod.exec_quote(part) for part in self.installed_launcher())
 
     def do_activate(self):
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)

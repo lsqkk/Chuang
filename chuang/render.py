@@ -348,11 +348,14 @@ class UIState:
         self.ribbon_surface: cairo.ImageSurface | None = None
         self.ribbon_rect = (0.0, 0.0, 0.0, 0.0)
         self.preview_dt = None          # 正在预览的时刻
+        self.preview_started = None     # 进入预览那一刻的墙钟（让人车在预览里也继续走）
         self.hover_dt = None
         self.dragging = False
         self.chip_rect = (0.0, 0.0, 0.0, 0.0)
         self.toast = ""
         self.toast_until = 0.0
+        self.toast_rect = (0.0, 0.0, 0.0, 0.0)
+        self.toast_detail = ""          # 非空时：点提示条可以看/复制完整内容
         self.hint_shown = False
 
 
@@ -812,18 +815,24 @@ class SkyPainter:
         """地平线之下、窗台之前的那条街上的人与车。"""
         if self._street_roster is None:
             self._street_roster = street.roster(self.fx.seed * 7 + 13)
+        ui = self.ui
         _, near_col = self._colors(scene)
         # 时间取"正在走动的墙钟"，而不是每分钟才重建一次的 scene.when，
         # 否则人与车会像定格一样一分钟跳一次（云是用墙钟画的，所以一直很顺）。
-        # 预览（拖动时间轴）时则以预览时刻为准。
+        # 时间旅行（预览）时以预览那一刻为起点，再加上之后真正走过的秒数：
+        # 天色停在被预览的时刻，但街上的人车照常走，不会冻成一张照片。
         when = scene.when
-        if self.clock is not None and not scene.preview:
+        if self.clock is not None:
             try:
                 now = self.clock()
-                if now is not None:
-                    when = now
             except Exception:
-                pass
+                now = None
+            if now is not None:
+                started = ui.preview_started if ui.preview_dt is not None else None
+                if scene.preview and started is not None:
+                    when = scene.when + (now - started)
+                else:
+                    when = now
         t = (when.hour * 3600 + when.minute * 60 + when.second
              + getattr(when, "microsecond", 0) / 1e6)
         street.draw(cr, w, h, scene, self._street_roster, t,
@@ -1475,11 +1484,13 @@ class SkyPainter:
     def _draw_toast(self, cr, w, h):
         ui = self.ui
         if not ui.toast or _time.time() > ui.toast_until:
+            ui.toast_rect = (0.0, 0.0, 0.0, 0.0)
             return
         remain = ui.toast_until - _time.time()
         alpha = clamp(min(1.0, remain / 0.6), 0, 1)
         size = clamp(h * 0.020, 12.0, 18.0)
-        tw, th = draw_text(cr, ui.toast, 0, -1000, size, (255, 255, 255), 0.0)
+        text = ui.toast + ("　·　详情" if ui.toast_detail else "")
+        tw, th = draw_text(cr, text, 0, -1000, size, (255, 255, 255), 0.0)
         bw, bh = tw + 34, th + 18
         bx = w / 2 - bw / 2
         by = SILL_Y * h - bh - 22
@@ -1490,8 +1501,9 @@ class SkyPainter:
         rounded_rect(cr, bx, by, bw, bh, bh / 2)
         cr.set_line_width(1)
         cr.stroke()
-        draw_text(cr, ui.toast, w / 2, by + 8, size, (250, 251, 255), 0.95 * alpha,
+        draw_text(cr, text, w / 2, by + 8, size, (250, 251, 255), 0.95 * alpha,
                   align="center")
+        ui.toast_rect = (bx, by, bw, bh)
 
     def draw_chip(self, cr, w, h):
         """预览提示（画在最上层，可点击返回此刻）。"""

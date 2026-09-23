@@ -96,6 +96,21 @@ def current_uris() -> tuple[str, str]:
     return out[0], out[1]
 
 
+def _gsettings(*args) -> tuple[int, str]:
+    """跑一次 gsettings，返回 (返回码, stdout)。"""
+    gsettings = shutil.which("gsettings")
+    if not gsettings:
+        return 1, ""
+    r = subprocess.run([gsettings, *args], capture_output=True, text=True)
+    return r.returncode, (r.stdout or "").strip()
+
+
+def shown_key() -> str:
+    """GNOME 此刻真正显示的是哪个键——深色模式看的是 picture-uri-dark。"""
+    rc, scheme = _gsettings("get", "org.gnome.desktop.interface", "color-scheme")
+    return "picture-uri-dark" if (rc == 0 and "dark" in scheme) else "picture-uri"
+
+
 def shown_uri() -> str:
     """桌面此刻真正显示的那张壁纸。
 
@@ -106,14 +121,7 @@ def shown_uri() -> str:
     light, dark = current_uris()
     if not dark or dark == light:
         return light
-    gsettings = shutil.which("gsettings")
-    scheme = ""
-    if gsettings:
-        r = subprocess.run([gsettings, "get", "org.gnome.desktop.interface",
-                            "color-scheme"], capture_output=True, text=True)
-        if r.returncode == 0:
-            scheme = r.stdout.strip().strip("'")
-    return dark if "dark" in scheme else light
+    return dark if shown_key() == "picture-uri-dark" else light
 
 
 def set_wallpaper(path: Path) -> tuple[bool, str]:
@@ -121,39 +129,35 @@ def set_wallpaper(path: Path) -> tuple[bool, str]:
 
 
 def apply_uri(uri: str) -> tuple[bool, str]:
-    """把任意壁纸 URI（png 或 GNOME 动态壁纸 xml）交给桌面环境。"""
+    """把任意壁纸 URI（png 或 GNOME 动态壁纸 xml）交给桌面环境。
+
+    写完一定**回读校验**：桌面没接受就把两个键都重设一遍再验一次。
+    否则会出现"程序以为换了、桌面还挂着上一张"——表现就是壁纸文件在更新，
+    但桌面上那张（连左上角的时间）一直是旧的。
+    """
     desktop = (os.environ.get("XDG_CURRENT_DESKTOP", "")
                + os.environ.get("DESKTOP_SESSION", "")).lower()
     tried = []
 
-    gsettings = shutil.which("gsettings")
-    if gsettings:
-        candidates = [("org.gnome.desktop.background", "picture-uri")]
+    if shutil.which("gsettings"):
+        schemas = []
         if "cinnamon" in desktop:
-            candidates.insert(0, ("org.cinnamon.desktop.background", "picture-uri"))
-        for schema, key in candidates:
-            got = subprocess.run([gsettings, "get", schema, key],
-                                 capture_output=True, text=True)
-            if got.returncode != 0:
+            schemas.append("org.cinnamon.desktop.background")
+        schemas.append("org.gnome.desktop.background")
+        for schema in schemas:
+            if _gsettings("get", schema, "picture-uri")[0] != 0:
                 tried.append(schema)
                 continue
-            subprocess.run([gsettings, "set", schema, key, uri],
-                           capture_output=True, text=True)
-            if schema.startswith("org.gnome"):
-                if subprocess.run([gsettings, "get", schema, "picture-uri-dark"],
-                                  capture_output=True).returncode == 0:
-                    subprocess.run([gsettings, "set", schema, "picture-uri-dark", uri],
-                                   capture_output=True)
-                subprocess.run([gsettings, "set", schema, "picture-options", "zoom"],
-                               capture_output=True)
-            check = subprocess.run([gsettings, "get", schema, key],
-                                   capture_output=True, text=True)
-            if check.returncode == 0 and uri.split("file://")[-1] in check.stdout:
-                return True, "已设为桌面壁纸"
+            for attempt in (0, 1):
+                _set_background(schema, uri)
+                if _background_effective(schema, uri):
+                    return True, "已设为桌面壁纸"
+                if attempt == 0:
+                    time.sleep(0.3)      # dconf 偶尔慢一拍，重设一次再看
             tried.append(schema)
 
-    if "mate" in desktop and gsettings:
-        subprocess.run([gsettings, "set", "org.mate.background",
+    if "mate" in desktop and shutil.which("gsettings"):
+        subprocess.run(["gsettings", "set", "org.mate.background",
                         "picture-filename", uri.replace("file://", "")],
                        capture_output=True)
         return True, "已设为桌面壁纸"
@@ -166,8 +170,62 @@ def apply_uri(uri: str) -> tuple[bool, str]:
             return True, "已设为桌面壁纸"
         tried.append("plasma")
 
-    return False, ("这个桌面环境我没法直接设置壁纸"
+    return False, ("这个桌面环境没接受这次换图"
                    + (f"（试过：{'、'.join(tried)}）" if tried else ""))
+
+
+def _set_background(schema: str, uri: str) -> None:
+    """把壁纸写进去（GNOME 要连深色模式的键一起写）。"""
+    _gsettings("set", schema, "picture-uri", uri)
+    if schema.startswith("org.gnome"):
+        if _gsettings("get", schema, "picture-uri-dark")[0] == 0:
+            _gsettings("set", schema, "picture-uri-dark", uri)
+        _gsettings("set", schema, "picture-options", "zoom")
+
+
+def _background_effective(schema: str, uri: str) -> bool:
+    """回读：桌面此刻真正生效的那个键，是不是我们要的那张图。"""
+    key = shown_key() if schema.startswith("org.gnome") else "picture-uri"
+    rc, data = _gsettings("get", schema, key)
+    if rc != 0:                       # 没有这个键（老 GNOME）就退回浅色键
+        rc, data = _gsettings("get", schema, "picture-uri")
+        if rc != 0:
+            return False
+    return uri.split("file://")[-1] in data
+
+
+def slot_mtimes() -> tuple[float, float]:
+    out = []
+    for path in SLOTS:
+        try:
+            out.append(path.stat().st_mtime)
+        except OSError:
+            out.append(0.0)
+    return (out[0], out[1])
+
+
+def shown_slot() -> int:
+    """桌面此刻挂着的是哪个槽位；挂的不是我们的图就返回 -1。"""
+    current = shown_uri()
+    for i in range(len(SLOTS)):
+        if current == slot_uri(i):
+            return i
+    return -1
+
+
+def stale_shown_slot(tolerance: float = 3.0):
+    """桌面挂着我们的图，却比另一张还旧 → 上一次换图没生效。
+
+    返回"该顶上来的那个槽位"，没有这种情况就返回 None。
+    """
+    shown = shown_slot()
+    if shown < 0:
+        return None
+    other = 1 - shown
+    m = slot_mtimes()
+    if m[other] > m[shown] + tolerance:
+        return other
+    return None
 
 
 def restore(light: str, dark: str) -> tuple[bool, str]:

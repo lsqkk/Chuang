@@ -250,17 +250,19 @@ def _first_token(exec_line: str) -> str:
     return text.split(None, 1)[0]
 
 
-def autostart_wanted_exec(exec_cmd: str, hidden: bool = False) -> str:
-    """自启文件里 Exec= 这一行应有的内容。"""
-    return exec_quote(exec_cmd) + (" --hidden" if hidden else "")
+def autostart_wanted_exec(argv, hidden: bool = False) -> str:
+    """自启文件里 Exec= 这一行应有的内容（argv 是启动命令的参数列表）。"""
+    if isinstance(argv, str):
+        argv = [argv]
+    return " ".join(exec_quote(part) for part in argv) + (" --hidden" if hidden else "")
 
 
-def autostart_needs_repair(exec_cmd: str, hidden: bool = False) -> bool:
+def autostart_needs_repair(argv, hidden: bool = False) -> bool:
     """自启文件是否存在、且指向的正是我们想运行的那个程序。"""
     if not AUTOSTART_FILE.exists():
         return False
     current = autostart_exec()
-    if current != autostart_wanted_exec(exec_cmd, hidden):
+    if current != autostart_wanted_exec(argv, hidden):
         return True
     # 命令看着对，但它指向的那个二进制可能已经被卸载/搬走：GNOME 会静默
     # 忽略这条自启项（只剩日志里一行 Exec binary ... does not exist）。
@@ -273,7 +275,7 @@ def autostart_needs_repair(exec_cmd: str, hidden: bool = False) -> bool:
     return shutil.which(first) is None
 
 
-def set_autostart(enabled: bool, exec_cmd: str, hidden: bool = False) -> None:
+def set_autostart(enabled: bool, argv, hidden: bool = False) -> None:
     """写入 / 删除 ~/.config/autostart/chuang.desktop。
 
     Exec 里放的必须是"这个程序此刻真正的命令行"，否则 GNOME 的
@@ -290,7 +292,7 @@ def set_autostart(enabled: bool, exec_cmd: str, hidden: bool = False) -> None:
                 "Name[en]=Chuang\n"
                 "GenericName=实时天空之窗\n"
                 "Comment=把你头顶此刻真实的天空搬到桌面\n"
-                f"Exec={autostart_wanted_exec(exec_cmd, hidden)}\n"
+                f"Exec={autostart_wanted_exec(argv, hidden)}\n"
                 "Icon=chuang\n"
                 "Terminal=false\n"
                 "StartupNotify=false\n"

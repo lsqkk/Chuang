@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
@@ -111,3 +112,13 @@ def check(local_version: str, timeout: float = TIMEOUT) -> tuple:
     if is_newer(release.version, parse_version(local_version)):
         return True, release, f"有新版本 {release.tag}（当前 {local_version}）"
     return False, release, f"已是最新版本 {local_version}"
+
+
+def installed_deb_version(package: str = "chuang") -> str:
+    """本机 .deb 里装的版本号（没装或没有 dpkg 就返回空串）。"""
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "-f=${Version}", package],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
