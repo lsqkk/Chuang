@@ -1,8 +1,12 @@
 """天文计算：太阳、月亮、恒星。纯本地数学，无网络依赖。
 
-太阳位置采用 NOAA Solar Calculator 的算法（精度约 ±0.01°）；
-月亮位置采用 Meeus《Astronomical Algorithms》第 47 章截断版（精度约 ±10"）。
-这些精度对"肉眼看到的天"来说远远足够。
+太阳位置采用 NOAA Solar Calculator 的算法；月亮位置采用 Meeus
+《Astronomical Algorithms》第 47 章（表 47.A / 47.B 各 60 项）。
+与 JPL 历表（用 pyephem 代查）逐点对照过：地心黄经残差 < 1′、距离残差 < 10 km，
+这已经是"肉眼绝对看不出来"的量级（1′ 相当于月面视直径的 1/30）。
+
+月亮还有一处不能省：它的地心坐标要换算成**地面观测者**看到的坐标（地平视差，
+最大 61′），否则月亮会"提前一个月亮直径"升起来。见 moon_altaz()。
 """
 
 from __future__ import annotations
@@ -15,12 +19,17 @@ DEG = math.pi / 180.0
 RAD = 180.0 / math.pi
 
 # 地球轨道与大气常数
-_SUN_RISE_ALT = -0.833  # 太阳上边缘触地平（含大气折射与日面半径）
+# 太阳上边缘触地平：−16′（日面半径）− 34′（大气折射）。这是太阳中心的
+# **几何**高度，所以只能拿 sun_geometric_altaz() 去比——拿带折射的高度去比
+# 就等于把折射算了两遍，日出会早、日落会晚各约 4 分钟。
+_SUN_RISE_ALT = -0.833
 _GOLDEN_ALT = 6.0
 _CIVIL_ALT = -6.0
 _NAUTICAL_ALT = -12.0
 _ASTRONOMICAL_ALT = -18.0
-_MOON_RISE_ALT = 0.125  # 含折射与视差后的近似值
+
+# 地球赤道半径（km）：算月亮的地平视差用
+_EARTH_RADIUS_KM = 6378.14
 
 
 # --------------------------------------------------------------------------
@@ -75,8 +84,8 @@ def sidereal_time_deg(jd: float, lon: float) -> float:
     return norm360(theta + lon)
 
 
-def _altaz_from_radec(ra_deg: float, dec_deg: float, lat: float, lon: float, jd: float):
-    """赤道坐标 → 地平坐标（含大气折射修正）。返回 (alt, az)。"""
+def _altaz_geometric(ra_deg: float, dec_deg: float, lat: float, lon: float, jd: float):
+    """赤道坐标 → 地平坐标的**几何位置**（不含折射）。返回 (alt, az)，单位度。"""
     lst = sidereal_time_deg(jd, lon)
     h = (lst - ra_deg) * DEG           # 时角
     dec = dec_deg * DEG
@@ -88,8 +97,12 @@ def _altaz_from_radec(ra_deg: float, dec_deg: float, lat: float, lon: float, jd:
     y = -math.cos(dec) * math.sin(h)
     x = math.sin(dec) * math.cos(phi) - math.cos(dec) * math.sin(phi) * math.cos(h)
     az = math.atan2(y, x)
-    alt_d = alt * RAD
-    az_d = norm360(az * RAD)
+    return alt * RAD, norm360(az * RAD)
+
+
+def _altaz_from_radec(ra_deg: float, dec_deg: float, lat: float, lon: float, jd: float):
+    """赤道坐标 → 地平坐标（含大气折射修正）。返回 (alt, az)。"""
+    alt_d, az_d = _altaz_geometric(ra_deg, dec_deg, lat, lon, jd)
     return alt_d + refraction(alt_d), az_d
 
 
@@ -142,14 +155,47 @@ def sun_altaz(when_utc: datetime, lat: float, lon: float):
     return _altaz_from_radec(eq.ra, eq.dec, lat, lon, jd)
 
 
+def sun_geometric_altaz(when_utc: datetime, lat: float, lon: float):
+    """太阳的**几何**位置（不含大气折射）。
+
+    升落、金色时刻、暮光的判据（−0.833° / ±6° / −12° / −18°）说的都是几何高度，
+    所以判定一律用这个；画面上的位置用带折射的 sun_altaz()（看到的确实是偏高的）。
+    """
+    jd = julian_day(to_utc(when_utc))
+    eq = sun_equatorial(jd)
+    return _altaz_geometric(eq.ra, eq.dec, lat, lon, jd)
+
+
+def sun_hour_angle(when_utc: datetime, lon: float) -> float:
+    """太阳的时角（度，-180..180）。时角为 0 就是太阳过中天那一刻。"""
+    jd = julian_day(to_utc(when_utc))
+    return wrap180(sidereal_time_deg(jd, lon) - sun_equatorial(jd).ra)
+
+
 def solar_noon(when_local_date: datetime, lat: float, lon: float) -> datetime:
-    """用简单迭代求当天太阳过中天时刻（本地 naive datetime）。"""
-    base = when_local_date.replace(hour=12, minute=0, second=0, microsecond=0)
-    for _ in range(3):
-        _, az = sun_altaz(to_utc(base), lat, lon)
-        delta_min = wrap180(180.0 - az) / 15.0 * 60.0  # 每 15° 一小时
-        base = base + timedelta(minutes=delta_min)
-    return base
+    """当天太阳过中天的时刻（与输入同样带不带时区）。
+
+    以前这里是把方位角"迭代到 180°"的定点迭代，而太阳接近天顶时方位角一秒
+    能翻几十度，迭代会直接跑飞——西安 2026-06-21 能差出 2 小时 46 分。
+    时角才是那个单调的量（一天里匀速走一圈），所以改成对时角求零点。
+    """
+    base = when_local_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    step = timedelta(minutes=10)
+    prev_t, prev_h = base, sun_hour_angle(base, lon)
+    for i in range(1, 24 * 6 + 1):
+        t = base + step * i
+        h = sun_hour_angle(t, lon)
+        if prev_h <= 0.0 <= h:          # 时角由负变正：中天在这一步里
+            lo, hi = prev_t, t
+            for _ in range(24):
+                mid = lo + (hi - lo) / 2
+                if sun_hour_angle(mid, lon) < 0.0:
+                    lo = mid
+                else:
+                    hi = mid
+            return lo + (hi - lo) / 2
+        prev_t, prev_h = t, h
+    return base + timedelta(hours=12)    # 理论到不了这里，兜个底
 
 
 # --------------------------------------------------------------------------
@@ -157,121 +203,135 @@ def solar_noon(when_local_date: datetime, lat: float, lon: float) -> datetime:
 # --------------------------------------------------------------------------
 
 _MOON_LR = (
-    # (l 系数, r 系数, M', M, F, D 的倍数)  —— Meeus 表 47.A 主要项
-    (6288774, -20905355, 0, 0, 0, 0),
-    (1274027, -3699111, 2, 0, 0, 0),
-    (658314, -2955968, 0, 0, 2, 0),
-    (213618, -569925, 0, 0, 0, 2),
+    # Meeus《Astronomical Algorithms》表 47.A（全 60 项）：
+    #   (l 系数 1e-6 度, r 系数 1e-3 km, M', M, F, D 的倍数)
+    # 这几列**必须与表里的顺序一一对应**，写错了月亮就会整体偏出几度——
+    # 曾经这里就是错的（第一项的 M' 写成了 0，最大的 6.29° 项直接消失），
+    # 见 CHANGELOG 1.1.8。改这张表时请对着原表逐列核一遍。
+    (6288774, -20905355, 1, 0, 0, 0),
+    (1274027, -3699111, -1, 0, 0, 2),
+    (658314, -2955968, 0, 0, 0, 2),
+    (213618, -569925, 2, 0, 0, 0),
     (-185116, 48888, 0, 1, 0, 0),
-    (-114332, -3149, 0, 0, 0, 4),
-    (58793, 246158, 2, 0, -2, 0),
-    (57066, -152138, 0, 0, 2, -2),
-    (53322, -170733, 2, 0, 0, -2),
-    (45758, -204586, 0, 0, 2, 2),
-    (-40923, -129620, 0, 1, 0, -2),
-    (-34720, 108743, 2, 1, 0, 0),
-    (-30383, 104755, 0, 1, 2, 0),
-    (15327, 10321, 2, 0, 0, 2),
-    (-12528, 0, 0, 0, 4, 0),
-    (10980, 79661, 0, 0, 4, -2),
-    (10675, -34782, 4, 0, 0, 0),
-    (10034, -23210, 2, 2, 0, 0),
-    (8548, -21636, 2, 0, -2, 2),
-    (-7888, 24208, 0, 0, 2, -4),
-    (-6766, 30824, 2, 0, 2, -2),
-    (-5163, -8379, 0, 2, 0, -2),
-    (4987, -16675, 2, 2, -2, 0),
-    (4036, -12831, 2, 0, 4, -2),
-    (3994, -10445, 0, 2, 2, 0),
-    (3861, -11650, 2, 0, 0, 4),
-    (3665, 14403, 0, 1, 4, 0),
-    (-2689, -7003, 0, 0, 4, 2),
-    (-2602, 0, 4, 0, 2, 0),
-    (2390, 10056, 2, 2, 0, -2),
-    (-2348, 6322, 4, 1, 0, 0),
-    (2236, -9884, 0, 0, 0, 6),
-    (-2120, 5751, 0, 1, 0, 4),
-    (-2069, 0, 4, 1, -2, 0),
-    (2048, -4950, 2, 0, 2, 0),
-    (-1773, 4130, 0, 0, 2, 4),
-    (-1595, 0, 2, 0, 6, 0),
-    (1215, -3958, 4, 0, -2, 0),
-    (-1110, 0, 0, 0, 6, -2),
-    (-892, 3258, 2, 0, 4, 2),
-    (-810, 2616, 4, 0, 2, 2),
-    (759, -1897, 0, 2, 0, 4),
-    (-713, -2117, 0, 1, 6, 0),
-    (-700, 2354, 0, 0, 6, 2),
-    (691, 0, 2, 0, 8, 0),
-    (596, 0, 0, 0, 2, 8),
-    (549, -1423, 2, 0, -2, 6),
-    (537, -1117, 4, 0, -4, 0),
-    (520, -1571, 0, 1, -2, 4),
-    (-487, -1739, 0, 0, 0, 8),
-    (-399, 0, 2, 1, 0, 2),
-    (-381, -4421, 4, 0, 2, 0),
-    (351, 0, 0, 0, 8, -2),
-    (-340, 0, 2, 1, 2, 0),
-    (330, 0, 0, 2, 0, -2),
-    (327, 0, 4, 0, 0, -4),
-    (-323, 1165, 2, 0, -4, 2),
-    (299, 0, 0, 0, 4, -6),
-    (294, 0, 0, 2, 4, 0),
+    (-114332, -3149, 0, 0, 2, 0),
+    (58793, 246158, -2, 0, 0, 2),
+    (57066, -152138, -1, -1, 0, 2),
+    (53322, -170733, 1, 0, 0, 2),
+    (45758, -204586, 0, -1, 0, 2),
+    (-40923, -129620, -1, 1, 0, 0),
+    (-34720, 108743, 0, 0, 0, 1),
+    (-30383, 104755, 1, 1, 0, 0),
+    (15327, 10321, 0, 0, -2, 2),
+    (-12528, 0, 1, 0, 2, 0),
+    (10980, 79661, 1, 0, -2, 0),
+    (10675, -34782, -1, 0, 0, 4),
+    (10034, -23210, 3, 0, 0, 0),
+    (8548, -21636, -2, 0, 0, 4),
+    (-7888, 24208, -1, 1, 0, 2),
+    (-6766, 30824, 0, 1, 0, 2),
+    (-5163, -8379, -1, 0, 0, 1),
+    (4987, -16675, 0, 1, 0, 1),
+    (4036, -12831, 1, -1, 0, 2),
+    (3994, -10445, 2, 0, 0, 2),
+    (3861, -11650, 0, 0, 0, 4),
+    (3665, 14403, -3, 0, 0, 2),
+    (-2689, -7003, -2, 1, 0, 0),
+    (-2602, 0, -1, 0, 2, 2),
+    (2390, 10056, -2, -1, 0, 2),
+    (-2348, 6322, 1, 0, 0, 1),
+    (2236, -9884, 0, -2, 0, 2),
+    (-2120, 5751, 2, 1, 0, 0),
+    (-2069, 0, 0, 2, 0, 0),
+    (2048, -4950, -1, -2, 0, 2),
+    (-1773, 4130, 1, 0, -2, 2),
+    (-1595, 0, 0, 0, 2, 2),
+    (1215, -3958, -1, -1, 0, 4),
+    (-1110, 0, 2, 0, 2, 0),
+    (-892, 3258, -1, 0, 0, 3),
+    (-810, 2616, 1, 1, 0, 2),
+    (759, -1897, -2, -1, 0, 4),
+    (-713, -2117, -1, 2, 0, 0),
+    (-700, 2354, -1, 2, 0, 2),
+    (691, 0, -2, 1, 0, 2),
+    (596, 0, 0, -1, -2, 2),
+    (549, -1423, 1, 0, 0, 4),
+    (537, -1117, 4, 0, 0, 0),
+    (520, -1571, 0, -1, 0, 4),
+    (-487, -1739, -2, 0, 0, 1),
+    (-399, 0, 0, 1, -2, 2),
+    (-381, -4421, 2, 0, -2, 0),
+    (351, 0, 1, 1, 0, 1),
+    (-340, 0, -2, 0, 0, 3),
+    (330, 0, -3, 0, 0, 4),
+    (327, 0, 2, -1, 0, 2),
+    (-323, 1165, 1, 2, 0, 0),
+    (299, 0, -1, 1, 0, 1),
+    (294, 0, 3, 0, 0, 2),
+    (0, 8752, -1, 0, -2, 2),
 )
 
 _MOON_B = (
-    (5128122, 0, 0, 0, 0),
-    (280602, 0, 0, 2, 0),
-    (277693, 0, 1, 0, 0),
-    (173237, 0, 0, 2, -2),
-    (55413, 0, 0, 2, -4),
-    (46271, 0, 0, 0, 4),
-    (32573, 2, 0, 0, 0),
-    (17198, 0, 0, 2, 2),
-    (9266, 0, 0, 4, 0),
-    (8822, 0, 0, 4, -2),
-    (8216, 4, 0, 0, 0),
-    (4324, 0, 0, 2, -6),
-    (4200, 0, 0, 2, -2),
-    (-3359, 2, 0, -2, 0),
-    (2463, 2, 1, 0, 0),
-    (2211, 0, 1, 2, 0),
-    (2065, 0, 2, 0, 0),
-    (-1870, 0, 0, 0, 6),
-    (1828, 2, 1, 0, -2),
-    (-1794, 0, 0, 2, 4),
-    (-1749, 0, 1, -2, 0),
-    (-1565, 0, 0, -2, 4),
-    (-1491, 0, 0, 2, -8),
-    (-1475, 2, 1, 2, 0),
-    (-1410, 4, 0, 0, -2),
-    (-1344, 2, 1, 0, 2),
-    (-1335, 0, 2, 0, -2),
-    (1107, 4, 1, 2, 0),
-    (1021, 0, 0, 6, 0),
-    (833, 0, 0, 2, 8),
-    (777, 4, 0, -2, 0),
-    (671, 2, 0, 4, 0),
-    (607, 0, 0, 6, -2),
-    (596, 2, 2, -2, 0),
-    (491, 0, 0, 0, 8),
-    (-451, 0, 1, 2, 2),
-    (439, 0, 1, -2, 2),
-    (422, 0, 0, 0, -4),
-    (421, 2, 0, 0, 4),
-    (-366, 0, 0, 2, 6),
-    (-351, 0, 0, 4, 4),
-    (331, 0, 0, 6, 2),
-    (315, 2, 1, 0, -4),
-    (302, 2, 2, -2, -2),
-    (-283, 2, 1, -2, 2),
-    (-229, 2, 0, 4, 2),
-    (223, 2, 0, 0, -6),
-    (223, 4, 0, 0, 2),
-    (-220, 2, 1, 0, 4),
-    (-220, 0, 2, 0, 4),
-    (-185, 0, 2, -2, 0),
-    (181, 2, 1, 2, -2),
+    # 表 47.B（全 60 项）：(b 系数, M', M, F, D 的倍数)
+    (5128122, 0, 0, 1, 0),
+    (280602, 1, 0, 1, 0),
+    (277693, 1, 0, -1, 0),
+    (173237, 0, 0, -1, 2),
+    (55413, -1, 0, 1, 2),
+    (46271, -1, 0, -1, 2),
+    (32573, 0, 0, 1, 2),
+    (17198, 2, 0, 1, 0),
+    (9266, 1, 0, -1, 2),
+    (8822, 2, 0, -1, 0),
+    (8216, 0, -1, -1, 2),
+    (4324, -2, 0, -1, 2),
+    (4200, 1, 0, 1, 2),
+    (-3359, 0, 1, -1, 2),
+    (2463, -1, -1, 1, 2),
+    (2211, 0, -1, 1, 2),
+    (2065, -1, -1, -1, 2),
+    (-1870, -1, 1, -1, 0),
+    (1828, -1, 0, -1, 4),
+    (-1794, 0, 1, 1, 0),
+    (-1749, 0, 0, 3, 0),
+    (-1565, -1, 1, 1, 0),
+    (-1491, 0, 0, 1, 1),
+    (-1475, 1, 1, 1, 0),
+    (-1410, 1, 1, -1, 0),
+    (-1344, 0, 1, -1, 0),
+    (-1335, 0, 0, -1, 1),
+    (1107, 3, 0, 1, 0),
+    (1021, 0, 0, -1, 4),
+    (833, -1, 0, 1, 4),
+    (777, 1, 0, -3, 0),
+    (671, -2, 0, 1, 4),
+    (607, 0, 0, -3, 2),
+    (596, 2, 0, -1, 2),
+    (491, 1, -1, -1, 2),
+    (-451, -2, 0, 1, 2),
+    (439, 3, 0, -1, 0),
+    (422, 2, 0, 1, 2),
+    (421, -3, 0, -1, 2),
+    (-366, -1, 1, 1, 2),
+    (-351, 0, 1, 1, 2),
+    (331, 0, 0, 1, 4),
+    (315, 1, -1, 1, 2),
+    (302, 0, -2, -1, 2),
+    (-283, 1, 0, 3, 0),
+    (-229, 1, 1, -1, 2),
+    (223, 0, 1, -1, 1),
+    (223, 0, 1, 1, 1),
+    (-220, -2, 1, -1, 0),
+    (-220, -1, 1, -1, 2),
+    (-185, 1, 0, 1, 1),
+    (181, -2, -1, -1, 2),
+    (-177, 2, 1, 1, 0),
+    (176, -2, 0, -1, 4),
+    (166, -1, -1, -1, 4),
+    (-164, 1, 0, -1, 1),
+    (132, 1, 0, -1, 4),
+    (-119, -1, 0, -1, 1),
+    (115, 0, -1, -1, 4),
+    (107, 0, -2, 1, 2),
 )
 
 
@@ -322,17 +382,59 @@ def moon_equatorial(jd: float) -> Equatorial:
     return Equatorial(norm360(ra), dec, delta, lam)
 
 
+def moon_parallax(distance_km: float) -> float:
+    """月亮的地平视差（度）：地心与地面两个视角之间最多差这么多。"""
+    return math.asin(min(1.0, _EARTH_RADIUS_KM / max(1.0, distance_km))) * RAD
+
+
 def moon_altaz(when_utc: datetime, lat: float, lon: float):
+    """月亮在**地面观测者**眼里的位置（含地平视差与大气折射）。
+
+    返回 (alt, az, 地心赤道坐标)。原来的实现只做了折射修正、把地心坐标直接当
+    成了看到的位置——可月亮只有 38 万公里远，地平视差最大 61′（约两个月面直径），
+    于是月亮会"还没升起来就先出现在窗里"。这里按
+
+        alt_地面 ≈ alt_地心 − π·cos(alt_地心),   π = asin(R_地球 / 距离)
+
+    做修正（一阶项即是全部，忽略项 < 1″）；方位角的变化只有 0.0x°，不修。
+    地心坐标仍是准确的，升落判定用的就是它，见 moon_geocentric_altaz()。
+    """
     jd = julian_day(to_utc(when_utc))
     eq = moon_equatorial(jd)
-    return _altaz_from_radec(eq.ra, eq.dec, lat, lon, jd) + (eq,)
+    alt, az = _altaz_geometric(eq.ra, eq.dec, lat, lon, jd)
+    alt -= moon_parallax(eq.distance) * math.cos(alt * DEG)
+    return alt + refraction(alt), az, eq
+
+
+def moon_geocentric_altaz(when_utc: datetime, lat: float, lon: float):
+    """月亮**地心**的几何位置（无折射、无视差）。
+
+    升落判定必须用这个口径：Meeus 的月出月落判据 h0 = 0.7275π − 34′ = +0.125°
+    本来就是"地心几何高度"，里面已经把折射与视差一起折进去了。用别的高度
+    （比如带折射的）去比这个阈值，月出会晚、月落会早一两分钟。
+    """
+    jd = julian_day(to_utc(when_utc))
+    eq = moon_equatorial(jd)
+    return _altaz_geometric(eq.ra, eq.dec, lat, lon, jd)
+
+
+def moon_rise_alt(when, lat: float, lon: float) -> float:
+    """月出月落的判据高度 h0 = 0.7275π − 34′（Meeus 15 章）。
+
+    拆开看就是"上边缘贴着地平"：π 是地平视差（把地心坐标换算到地面），
+    0.2725π 正好是月面视半径（月面半径/距离 ≈ 0.2725），34′ 是地平附近的大气折射。
+    视差随距离变（0.89°～1.02°），所以 h0 也是变的（+0.08°～+0.18°），
+    取常数 0.125° 会让月出月落差半分钟左右——不值得省这一步。
+    """
+    jd = julian_day(to_utc(when))
+    return 0.7275 * moon_parallax(moon_equatorial(jd).distance) - 0.5667
 
 
 def moon_phase(when_utc: datetime):
-    """返回 (相位 0=新月 0.5=满月 1=下一个新月, 被照亮的比例, 亮面在天空中的方向)。
+    """返回 (相位 0=新月 0.5=满月 1=下一个新月, 被照亮的比例, 日月角距/度)。
 
-    亮面方向用"从月亮指向太阳"的单位向量在 ENU 水平面的投影表示，单位为弧度，
-    0 = 正东方向偏移，画面上可直接使用。
+    第三个值是"太阳与月亮在天空中的角距"（elongation，度），只有 0-180：
+    它不表示亮面朝向。要画亮面朝哪，用 bright_limb_vector()。
     """
     jd = julian_day(to_utc(when_utc))
     sun = sun_equatorial(jd)
@@ -370,15 +472,22 @@ def _unit(alt, az):
 
 def _find_crossings(func, start_local: datetime, lat: float, lon: float, target: float,
                     step_min: int = 4, rising: bool | None = None):
-    """在 [start, start+24h) 内寻找 func(alt) 穿越 target 的时刻（本地时间）。"""
-    tz = start_local.tzinfo
+    """在 [start, start+24h) 内寻找 func(alt) 穿越 target 的时刻（本地时间）。
+
+    target 可以是常数，也可以是 target(dt, lat, lon)——月出月落的判据本身
+    随距离变化（h0 = 0.7275π − 34′），所以允许它是个函数。
+    """
     base = start_local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def diff(t: datetime) -> float:
+        tgt = target(t, lat, lon) if callable(target) else target
+        return func(to_utc(t), lat, lon)[0] - tgt
+
     samples = []
     n = int(24 * 60 / step_min)
     for i in range(n + 2):
         t = base + timedelta(minutes=i * step_min)
-        alt = func(to_utc(t), lat, lon)[0] - target
-        samples.append((t, alt))
+        samples.append((t, diff(t)))
     out = []
     for i in range(len(samples) - 1):
         (t0, a0), (t1, a1) = samples[i], samples[i + 1]
@@ -390,7 +499,7 @@ def _find_crossings(func, start_local: datetime, lat: float, lon: float, target:
             lo, hi = t0, t1
             for _ in range(18):
                 mid = lo + (hi - lo) / 2
-                am = func(to_utc(mid), lat, lon)[0] - target
+                am = diff(mid)
                 if (a0 < 0) == (am < 0):
                     lo = mid
                 else:
@@ -410,23 +519,23 @@ def _first(crossings, fallback=None):
 def sun_events(local_date: datetime, lat: float, lon: float) -> dict:
     """一天中的关键光照时刻（本地 naive datetime）。"""
     ev = {}
-    ev["sunrise"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _SUN_RISE_ALT, rising=True))
-    ev["sunset"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _SUN_RISE_ALT, rising=False))
-    ev["golden_morning_end"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _GOLDEN_ALT, rising=True))
-    ev["golden_evening_start"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _GOLDEN_ALT, rising=False))
-    ev["civil_dawn"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _CIVIL_ALT, rising=True))
-    ev["civil_dusk"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _CIVIL_ALT, rising=False))
-    ev["nautical_dawn"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _NAUTICAL_ALT, rising=True))
-    ev["nautical_dusk"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _NAUTICAL_ALT, rising=False))
-    ev["astro_dawn"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _ASTRONOMICAL_ALT, rising=True))
-    ev["astro_dusk"] = _first(_find_crossings(sun_altaz, local_date, lat, lon, _ASTRONOMICAL_ALT, rising=False))
+    sun = sun_geometric_altaz          # 判据都是几何高度，别用带折射的那个
+    ev["sunrise"] = _first(_find_crossings(sun, local_date, lat, lon, _SUN_RISE_ALT, rising=True))
+    ev["sunset"] = _first(_find_crossings(sun, local_date, lat, lon, _SUN_RISE_ALT, rising=False))
+    ev["golden_morning_end"] = _first(_find_crossings(sun, local_date, lat, lon, _GOLDEN_ALT, rising=True))
+    ev["golden_evening_start"] = _first(_find_crossings(sun, local_date, lat, lon, _GOLDEN_ALT, rising=False))
+    ev["civil_dawn"] = _first(_find_crossings(sun, local_date, lat, lon, _CIVIL_ALT, rising=True))
+    ev["civil_dusk"] = _first(_find_crossings(sun, local_date, lat, lon, _CIVIL_ALT, rising=False))
+    ev["nautical_dawn"] = _first(_find_crossings(sun, local_date, lat, lon, _NAUTICAL_ALT, rising=True))
+    ev["nautical_dusk"] = _first(_find_crossings(sun, local_date, lat, lon, _NAUTICAL_ALT, rising=False))
+    ev["astro_dawn"] = _first(_find_crossings(sun, local_date, lat, lon, _ASTRONOMICAL_ALT, rising=True))
+    ev["astro_dusk"] = _first(_find_crossings(sun, local_date, lat, lon, _ASTRONOMICAL_ALT, rising=False))
     ev["noon"] = solar_noon(local_date, lat, lon)
 
-    def moon_at(dt, la, lo):
-        return moon_altaz(dt, la, lo)[:2]
-
-    ev["moonrise"] = _first(_find_crossings(moon_at, local_date, lat, lon, _MOON_RISE_ALT, rising=True))
-    ev["moonset"] = _first(_find_crossings(moon_at, local_date, lat, lon, _MOON_RISE_ALT, rising=False))
+    ev["moonrise"] = _first(_find_crossings(moon_geocentric_altaz, local_date, lat, lon,
+                                            moon_rise_alt, rising=True))
+    ev["moonset"] = _first(_find_crossings(moon_geocentric_altaz, local_date, lat, lon,
+                                           moon_rise_alt, rising=False))
     return ev
 
 

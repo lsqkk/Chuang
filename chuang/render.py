@@ -822,10 +822,31 @@ class SkyPainter:
     # 地平线上的剪影：远山 + 城市屋顶
     # ------------------------------------------------------------------
     def _layers(self, scene: Scene):
-        seed = skyline_seed(scene.location_name or "窗", scene.lat, scene.lon)
+        seed = self._city_seed(scene)
         if seed not in self._skyline:
             self._skyline[seed] = _city.generate(seed)
         return self._skyline[seed]
+
+    @staticmethod
+    def _city_seed(scene: Scene) -> int:
+        """这座城市的天际线种子：由名字 + 经纬度决定，同一个城市永远一样。"""
+        return skyline_seed(scene.location_name or "窗", scene.lat, scene.lon)
+
+    def invalidate_location(self) -> None:
+        """换城市之后调用：楼群数据与所有离屏缓存都得重来。
+
+        城市那块位图的缓存键现在带了城市种子（见 _draw_skyline），所以只换名字
+        也会重画；这里再整片清一次，是因为天空、云、窗台那几张的键只管"光 +
+        尺寸"——换城市意味着换纬度，太阳的走法整个变了，留着旧键没有意义。
+        换城市是低频操作，一次清干净最省心。
+        """
+        self._skyline.clear()
+        self._sky_surf = None
+        self._cloud_surf = None
+        self._city_surf = None
+        self._sill_surf = None
+        self._overlay_surf = None
+        self._layout_cache.clear()
 
     def _light(self, scene: Scene, az0: float, direct: float) -> _city.Light:
         """把"此刻的天色"翻译成建筑与街道能用的光照参数。"""
@@ -1004,7 +1025,8 @@ class SkyPainter:
         horizon_y = HORIZON_Y * h
         # 城市是整帧里最贵的一块（每帧上千条路径），而它只随光变化——
         # 把光照量化成很细的档位缓存下来，太阳走过一格才重画一次。
-        key = (int(w), int(h),
+        # key 里必须带上城市种子：光没变、城市变了的时候，一样得重画。
+        key = (int(w), int(h), self._city_seed(scene),
                round(light.sun_alt * 4), round(light.rel_az * 4),
                round(light.ambient * 60), round(light.direct * 60),
                round(light.night * 40), round(light.moon * 30),
@@ -1620,6 +1642,9 @@ class SkyPainter:
             rows.append(("窗外", w))
             rows.append(("风", f"{compass(scene.wind_dir)} {scene.wind_speed:.1f} km/h"
                              + (f" · 湿度 {scene.humidity:.0f}%" if scene.humidity else "")))
+        elif scene.weather_disabled:
+            # 用户自己关的天气，别写成"未联网"——那会把人指去查网络
+            rows.append(("窗外", "你关掉了天气 · 只看天"))
         else:
             rows.append(("窗外", "未联网 · 仅天文模式"))
         return rows

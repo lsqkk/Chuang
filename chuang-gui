@@ -8,6 +8,10 @@
 图形界面的两个开关：
     chuang --city           启动时直接打开「换一扇窗」
     chuang --hidden         不弹窗，直接待在系统托盘里（开机自启用）
+
+另外几个只有开发时才用的环境变量（见 AGENTS.md）：
+    CHUANG_TIME=21:30        假装此刻是 21:30
+    CHUANG_WEATHER=63:95:18:200   假装天气（天气码:云量:风速:风向）
 """
 
 import os
@@ -17,9 +21,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from chuang import __version__  # noqa: E402
 
+KNOWN_FLAGS = ("--city", "--hidden", "--version", "-V", "--check-update", "-h", "--help")
+
+
+def _usage() -> int:
+    print(__doc__.strip())
+    return 0
+
 
 def _headless(args) -> int:
     """不依赖 GTK 的命令行功能，返回 -1 表示"应该启动图形界面"。"""
+    if "-h" in args or "--help" in args:
+        return _usage()
     if "--version" in args or "-V" in args:
         print(f"窗 · Chuang {__version__}")
         return 0
@@ -37,6 +50,13 @@ def _headless(args) -> int:
 
 if __name__ == "__main__":
     args = [a for a in sys.argv]
+    # 认不出的参数以前会被**静默忽略**（`chuang --citty` 就当成正常启动），
+    # 打错一个字母要排半天，所以直接说出来。
+    unknown = [a for a in args[1:] if a.startswith("-") and a not in KNOWN_FLAGS]
+    if unknown:
+        print(f"不认识的参数：{' '.join(unknown)}", file=sys.stderr)
+        print(f"可用参数：{' '.join(KNOWN_FLAGS)}", file=sys.stderr)
+        sys.exit(2)
     code = _headless(args)
     if code >= 0:
         sys.exit(code)

@@ -1,5 +1,5 @@
 # 常用任务：make help 看一眼
-.PHONY: help run city install deb release release-dry screenshots check clean uninstall
+.PHONY: help run city install deb release release-dry screenshots test check clean uninstall
 
 PY ?= python3
 
@@ -8,7 +8,8 @@ help:
 	@echo "  make run          直接运行（开发模式）"
 	@echo "  make city         启动并打开「换一扇窗」"
 	@echo "  make screenshots  重新生成 README 里的截图"
-	@echo "  make check        语法检查 + 出一张测试图"
+	@echo "  make test         跑自动化测试（天文、天气、壁纸、绘制冒烟）"
+	@echo "  make check        语法检查 + 跑测试 + 出一张测试图"
 	@echo "  make deb          打包 .deb（产物在 packaging/out/）"
 	@echo "  make release      发版：打 tag → CI 打包 → 挂到 Release（packaging/release.sh）"
 	@echo "  make release-dry  发版前的检查（--dry-run，什么都不改）"
@@ -25,8 +26,12 @@ city:
 screenshots:
 	$(PY) tools/make_screenshots.py
 
+test:
+	$(PY) -m unittest discover -s tests -t . -v
+
 check:
 	$(PY) -m py_compile chuang/*.py tools/*.py chuang-gui
+	$(PY) -m unittest discover -s tests -t .
 	$(PY) tools/snapshot.py /tmp/chuang-check.png 18:35 34.34 108.94
 	@echo "✓ 检查通过"
 

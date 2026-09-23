@@ -1,8 +1,14 @@
 """把此刻的天空写成桌面壁纸。
 
 思路：用和窗口里完全一样的绘制代码，离屏渲染一张与屏幕同尺寸的 PNG，
-再交给桌面环境设为壁纸。GNOME 对同一个文件路径未必会重新加载，
-所以在两个文件名之间来回写（a/b 交替）来触发刷新。
+再交给桌面环境设为壁纸。
+
+刷新机制（**别照着以前的注释改回去**）：gnome-shell 把解码结果按文件缓存在
+`Meta.BackgroundImageCache` 里，并且只为"当前正在显示的那个文件"挂文件监听。
+所以常态是**就地重写那张正在显示的图**——内容一变，shell 自己 purge + 重读；
+反过来"写另一张再把 URI 切过去"会让它直接拿出那个文件**上一次**的解码结果，
+桌面于是显示旧画面（这是 1.1.4 修掉的坑，详见 DESIGN.md §4.1）。
+只有"接管桌面"和每隔几分钟的兜底才真的换一次文件名，换完要 touch() 两下。
 """
 
 from __future__ import annotations
@@ -10,7 +16,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -21,7 +26,10 @@ import cairo
 
 CACHE = Path.home() / ".cache" / "chuang"
 SLOTS = (CACHE / "sky-a.png", CACHE / "sky-b.png")
-FRAME_DIR = CACHE / "frames"
+# 动态壁纸的帧目录：两个轮着用。正在显示的那一份在生成期间**一个字节都不动**，
+# 画完、XML 写好了才切过去——中途失败最多是"这次没换成"，桌面不会变空。
+FRAME_DIRS = (CACHE / "frames-a", CACHE / "frames-b")
+LEGACY_FRAME_DIR = CACHE / "frames"      # 1.1.7 及以前用的单一目录名
 DAY_XML = CACHE / "sky-day.xml"
 TRANSITION_S = 30.0        # 帧间过渡秒数（静态时长 = 一天/帧数 - 过渡）
 
@@ -44,7 +52,13 @@ def is_our_uri(uri: str) -> bool:
 
 
 def screen_size() -> tuple[int, int]:
-    """当前主显示器的分辨率；拿不到就退回 1920×1080。"""
+    """当前主显示器的分辨率；拿不到就退回 1920×1080。
+
+    多屏时按**主显示器**的比例作画：GNOME 对每块屏幕用的是同一张图（zoom 裁切），
+    所以别的屏幕会按自己的比例裁一下——够用，不是"跨屏拼一张大图"。
+    真要做跨屏拼图得按所有显示器的包围盒渲染，代价是每帧的像素数和窗口尺寸
+    不再相关（双 4K 就是 4 倍多的绘制量），暂时不值得。
+    """
     try:
         import gi
         gi.require_version("Gdk", "4.0")
@@ -109,6 +123,16 @@ def current_uris() -> tuple[str, str]:
     return out[0], out[1]
 
 
+def current_options() -> str:
+    """当前的缩放方式（picture-options：zoom / scaled / centered / wallpaper…）。
+
+    接管壁纸时我们一定要写 zoom（天空必须铺满），所以**必须连这个值一起记下来**，
+    否则"还原成原来的壁纸"只能还原图片、还原不了"他原来是用拉伸/居中的"。
+    """
+    rc, data = _gsettings("get", "org.gnome.desktop.background", "picture-options")
+    return data.strip().strip("'") if rc == 0 else ""
+
+
 def _gsettings(*args) -> tuple[int, str]:
     """跑一次 gsettings，返回 (返回码, stdout)。
 
@@ -146,6 +170,7 @@ def shown_uri() -> str:
 
 
 def set_wallpaper(path: Path) -> tuple[bool, str]:
+    """把某个 png/xml 设为壁纸。返回 (是否成功, 说明)。"""
     return apply_uri("file://" + quote(str(path)))
 
 
@@ -256,15 +281,19 @@ def stale_shown_slot(tolerance: float = 3.0):
     return None
 
 
-def restore(light: str, dark: str) -> tuple[bool, str]:
-    """还原成原来那张壁纸。"""
+def restore(light: str, dark: str, options: str = "") -> tuple[bool, str]:
+    """还原成原来那张壁纸（连缩放方式一起还回去）。"""
     if not light:
         return False, "没有记录到你原来的壁纸"
     ok, msg = apply_uri(light)
-    if ok and dark and dark != light:
-        if shutil.which("gsettings"):
+    if ok and shutil.which("gsettings"):
+        if dark and dark != light:
             _gsettings("set", "org.gnome.desktop.background",
                        "picture-uri-dark", dark)
+        # 接管时我们把 picture-options 改成了 zoom（sky 必须铺满），
+        # 还回去的时候必须一起还——用户可能本来是"拉伸/居中/平铺"。
+        if options:
+            _gsettings("set", "org.gnome.desktop.background", "picture-options", options)
     return ok, "已还原成你原来的壁纸" if ok else msg
 
 
@@ -289,6 +318,33 @@ def write_day_xml(frames: list[Path], start: datetime, out: Path = DAY_XML) -> P
     return out
 
 
+def active_frame_dir() -> Path | None:
+    """当前动态壁纸 XML 指的是哪个帧目录（没有就返回 None）。"""
+    try:
+        text = DAY_XML.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for d in (*FRAME_DIRS, LEGACY_FRAME_DIR):
+        if str(d) in text:
+            return d
+    return None
+
+
+def _clear_dir(path: Path) -> None:
+    """清空一个**我们自己**的帧目录（只删这个目录本身，不碰别处）。"""
+    if path.parent != CACHE:
+        return
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _prune_frame_dirs(keep: Path) -> None:
+    """删掉不用的帧目录（几十 MB）。只在新的 XML 生效之后才调用。"""
+    for d in (*FRAME_DIRS, LEGACY_FRAME_DIR):
+        if d != keep and d.parent == CACHE:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 # --------------------------------------------------------------------------
 # 后台渲染：壁纸的绘制放在线程里，别卡住窗口
 # --------------------------------------------------------------------------
@@ -310,6 +366,9 @@ class Worker:
     def location(self, lat: float, lon: float, tz: str, label: str):
         self.lat, self.lon, self.tz, self.label = lat, lon, tz, label
         self.engine.set_location(lat, lon, tz)
+        # 换了城市：楼群数据与那一堆离屏缓存（城市/窗台/天空/云）都得重来，
+        # 否则桌面上的天空还朝着上一座城市。
+        self.painter.invalidate_location()
 
     @property
     def busy(self) -> bool:
@@ -320,7 +379,7 @@ class Worker:
 
     def render_now(self, when: datetime, weather, show_info: bool, show_ribbon: bool,
                    size: tuple[int, int], slot: int, done,
-                   adopt: bool = False) -> None:
+                   adopt: bool = False, weather_off: bool = False) -> None:
         """渲染"此刻"的一张壁纸。done(ok, message, slot) 在主线程被调用。
 
         adopt=False（常态）：**就地更新桌面正在显示的那个文件**。gnome-shell
@@ -343,7 +402,8 @@ class Worker:
                     self.painter.ui.ribbon = self.engine.ribbon(day, weather)
                     self.painter.ui.ribbon_surface = None
                 scene = self.engine.build(when, weather, preview=False,
-                                          location_label=self.label)
+                                          location_label=self.label,
+                                          weather_off=weather_off)
                 # 槽位由主线程决定（它知道桌面此刻显示的是哪一张），这里只负责画
                 # 注意：不能在这里给 slot 赋值，否则它就成了局部变量（闭包捕获不到）
                 path = SLOTS[slot]
@@ -368,7 +428,8 @@ class Worker:
         threading.Thread(target=work, daemon=True, name="chuang-wallpaper").start()
 
     def render_day(self, day: datetime, weather, show_info: bool, show_ribbon: bool,
-                   size: tuple[int, int], frames: int, progress, done) -> None:
+                   size: tuple[int, int], frames: int, progress, done,
+                   weather_off: bool = False) -> None:
         """渲染一整天的 48 帧并生成动态壁纸 XML。"""
         if not self._lock.acquire(blocking=False):
             return
@@ -377,13 +438,11 @@ class Worker:
         def work():
             from gi.repository import GLib
             try:
-                # 先清掉上一次的帧文件：它们有几十 MB，而且重新生成后旧帧
-                # 只会让 GNOME 的 XML 指向混在一起的新旧两张图
-                for old in FRAME_DIR.glob("frame-*.png"):
-                    try:
-                        old.unlink()
-                    except OSError:
-                        pass
+                # 画进"另一本相册"：桌面此刻正在看的那个目录一个字节都不动，
+                # 于是中途失败最多是这次没换成，绝不会留下一张空桌面。
+                active = active_frame_dir()
+                stage = next((d for d in FRAME_DIRS if d != active), FRAME_DIRS[0])
+                _clear_dir(stage)
                 self.painter.ui.show_info = show_info
                 self.painter.ui.show_ribbon = show_ribbon
                 if show_ribbon:
@@ -395,14 +454,17 @@ class Worker:
                 for i in range(frames):
                     when = base + timedelta(minutes=i * step)
                     scene = self.engine.build(when, weather, preview=False,
-                                              location_label=self.label)
-                    p = FRAME_DIR / f"frame-{i:02d}.png"
+                                              location_label=self.label,
+                                              weather_off=weather_off)
+                    p = stage / f"frame-{i:02d}.png"
                     render(p, self.painter, scene, self._az0(), size)
                     paths.append(p)
                     if i % 4 == 0 or i == frames - 1:
                         GLib.idle_add(progress, i + 1, frames)
                 xml = write_day_xml(paths, day)
                 ok, msg = apply_uri("file://" + quote(str(xml)))
+                if ok:
+                    _prune_frame_dirs(keep=stage)   # 新的生效了才清旧的
                 GLib.idle_add(done, ok, msg)
             except Exception as exc:
                 GLib.idle_add(done, False, f"生成动态壁纸失败：{exc}")
@@ -411,8 +473,3 @@ class Worker:
                 self._lock.release()
 
         threading.Thread(target=work, daemon=True, name="chuang-wallpaper-day").start()
-
-
-def set_wallpaper(path: Path) -> tuple[bool, str]:
-    """按桌面环境设置壁纸。返回 (是否成功, 说明)。"""
-    return apply_uri("file://" + quote(str(path)))

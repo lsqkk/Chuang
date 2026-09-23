@@ -12,7 +12,7 @@ import time as _time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
@@ -219,6 +219,41 @@ def geocode(query: str, count: int = 6) -> list[dict]:
     return out
 
 
+def timezone_for(lat: float, lon: float, timeout: float = 6.0) -> str:
+    """按经纬度问一次时区，返回 IANA 名字（如 Asia/Shanghai）；问不到就返回 ""。
+
+    手输经纬度时以前只按经度取整成 `Etc/GMT±N`，那是**固定偏移、没有夏令时**：
+    柏林（13.4°E）夏天会得到一个比真实时间早一小时的"窗"。Open-Meteo 的
+    `timezone=auto` 正好会回一个 IANA 名字，而 zoneinfo 认的就是这个——
+    夏令时、历史规则全都跟着对了。断网时退回按经度取整（见 fallback_timezone）。
+    """
+    params = {
+        "latitude": f"{lat:.4f}",
+        "longitude": f"{lon:.4f}",
+        "timezone": "auto",
+        "forecast_days": "1",
+        "current": "temperature_2m",
+    }
+    try:
+        data = _fetch_json(API + "?" + urllib.parse.urlencode(params), timeout=timeout)
+    except Exception:
+        return ""
+    tz = data.get("timezone") or ""
+    # 只认 zoneinfo 真的能解析的名字，"GMT"/"auto" 这类不算
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(tz)
+    except Exception:
+        return ""
+    return tz
+
+
+def fallback_timezone(lon: float) -> str:
+    """断网时的将就方案：按经度取整成固定偏移（没有夏令时，最多差一小时）。"""
+    offset = max(-12, min(12, int(round(lon / 15.0))))
+    return f"Etc/GMT{'-' if offset >= 0 else '+'}{abs(offset)}"
+
+
 # --------------------------------------------------------------------------
 # 缓存与后台刷新
 # --------------------------------------------------------------------------
@@ -279,7 +314,20 @@ class WeatherService:
         self.lat = 0.0
         self.lon = 0.0
         self.tz = "auto"
-        self.enabled = True
+        self.enabled = True       # 用户开关：「跟随真实天气」开不开
+        self.allow_fetch = True   # 允不允许联网（CHUANG_WEATHER 的假天气会关掉它）
+
+    @property
+    def effective(self) -> Weather | None:
+        """此刻**该用来作画**的那份天气；用户关掉「跟随真实天气」时是 None。
+
+        和 self.weather 的区别是"有没有"与"要不要"：weather 是缓存里有什么
+        （断网也能接着用上一份，那是对的），effective 是用户要不要看天气。
+        画面、长卷、壁纸一律用 effective——否则这个开关只挡住了联网刷新，
+        磁盘里那份缓存（第一次成功抓取之后就一直存在）还会永远画在窗上，
+        开关看起来就跟坏了一样。
+        """
+        return self.weather if self.enabled else None
 
     def set_location(self, lat: float, lon: float, tz: str) -> None:
         with self._lock:
@@ -289,7 +337,7 @@ class WeatherService:
             self.refresh(force=True)
 
     def maybe_refresh(self) -> None:
-        if not self.enabled:
+        if not (self.enabled and self.allow_fetch):
             return
         w = self.weather
         if w is None or (_time.time() - w.fetched_at) > REFRESH_SECONDS:
@@ -298,7 +346,7 @@ class WeatherService:
     def refresh(self, force: bool = False) -> None:
         if self._busy:
             return
-        if not self.enabled:
+        if not (self.enabled and self.allow_fetch):
             return
         self._busy = True
         lat, lon, tz = self.lat, self.lon, self.tz

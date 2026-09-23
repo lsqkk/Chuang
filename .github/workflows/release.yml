@@ -24,6 +24,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    name: 单元测试
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 装绘制依赖（测试里的离屏渲染要 cairo + Pango + GTK4/libadwaita + 中文字体）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi python3-cairo gir1.2-gtk-4.0 gir1.2-adw-1 \
+            gir1.2-pango-1.0 fonts-noto-cjk
+
+      - name: 跑测试
+        run: python3 -m unittest discover -s tests -t . -v
+
   plan:
     name: 算出版本号与 tag
     runs-on: ubuntu-22.04
@@ -52,7 +68,7 @@ jobs:
 
   build:
     name: 打包并自检 .deb
-    needs: plan
+    needs: [plan, test]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5

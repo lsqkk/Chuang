@@ -72,6 +72,7 @@ class Scene:
 
     # 天气
     has_weather: bool = False
+    weather_disabled: bool = False  # 用户自己把「跟随真实天气」关掉了
     weather_stale: bool = False
     cloud: float = 0.0
     code: int = 0
@@ -192,7 +193,8 @@ class SkyEngine:
 
     # ---- 主构建 -------------------------------------------------------
     def build(self, when: datetime, weather: Weather | None = None,
-              preview: bool = False, location_label: str = "") -> Scene:
+              preview: bool = False, location_label: str = "",
+              weather_off: bool = False) -> Scene:
         if when.tzinfo is None:
             when = when.replace(tzinfo=self._tzinfo) if self._tzinfo else when.astimezone()
         utc = A.to_utc(when)
@@ -235,6 +237,10 @@ class SkyEngine:
             sc.precip_strength = precip_strength(sc.code, weather.precip if not preview else 0.0)
             sc.thunder = is_thunder(sc.code)
             sc.fog = is_fog(sc.code)
+        elif weather_off:
+            # "没有天气"和"你关掉了天气"是两回事：前者要写"未联网"，
+            # 后者写成"未联网"会把用户指去检查网络。让画面知道这个区别。
+            sc.weather_disabled = True
         return sc
 
     # ---- 今日天色长卷 -------------------------------------------------

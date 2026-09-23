@@ -152,9 +152,12 @@ class Tray:
     """一个 KStatusNotifierItem，菜单内容来自应用的 Gio.Menu。"""
 
     def __init__(self, menu_model: Gio.MenuModel, activate_cb, action_lookup,
-                 icon_name: str = "chuang", prefix_items=None):
+                 icon_name: str = "chuang", prefix_items=None,
+                 activate_action: str = "win.show"):
         self.menu_model = menu_model
         self.activate_cb = activate_cb
+        # 图标被点（Activate）时执行哪个动作——和菜单第一项是同一个
+        self.activate_name = activate_action
         self.action_lookup = action_lookup     # name -> Gio.Action|None
         self.icon_name = icon_name
         self.prefix_items = prefix_items or []
@@ -393,10 +396,13 @@ class Tray:
     # ------------------------------------------------------------------
     def _on_sni_call(self, conn, sender, path, iface, method, params, invocation):
         if method in ("Activate", "SecondaryActivate"):
-            self.activate_cb()
+            # 把名字显式传过去：窗口那边的方法签名是 (name, target)，不带参数
+            # 调用会抛 TypeError，而 D-Bus 方法处理器抛异常就意味着这次调用
+            # 永远等不到回复（图标点了没反应，日志里多一条 traceback）。
+            self.activate_cb(self.activate_name)
             invocation.return_value(None)
         elif method == "XAyatanaSecondaryActivate":
-            self.activate_cb()
+            self.activate_cb(self.activate_name)
             invocation.return_value(None)
         elif method == "ContextMenu":
             invocation.return_value(None)
@@ -471,7 +477,7 @@ class Tray:
     def _on_menu_call(self, conn, sender, path, iface, method, params, invocation):
         try:
             self._dispatch_menu_call(method, params, invocation)
-        except Exception as exc:      # 绝不吞掉请求：出错也回一个中性结果
+        except Exception:             # 绝不吞掉请求：出错也回一个中性结果
             import traceback; traceback.print_exc()
             try:
                 if method == "GetLayout":

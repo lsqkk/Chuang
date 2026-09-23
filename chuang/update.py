@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 REPO = "lsqkk/Chuang"
@@ -36,6 +38,8 @@ class Release:
     published: str = ""
     deb_url: str = ""
     deb_name: str = ""
+    sums_url: str = ""          # SHA256SUMS 校验文件（CI 打包时生成）
+    sums_name: str = ""
     version: tuple = ()
     assets: list = field(default_factory=list)
 
@@ -98,7 +102,35 @@ def fetch_latest(timeout: float = TIMEOUT) -> Optional[Release]:
         rel.assets.append({"name": name, "url": url, "size": asset.get("size") or 0})
         if name.endswith(".deb") and not rel.deb_url:
             rel.deb_url, rel.deb_name = url, name
+        if name == "SHA256SUMS" and not rel.sums_url:
+            rel.sums_url, rel.sums_name = url, name
     return rel
+
+
+def parse_sha256sums(text: str) -> dict[str, str]:
+    """解析 `sha256sum` 的输出：`<64 位十六进制>  <文件名>`。坏行直接跳过。"""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts[0].lower(), parts[1].strip().lstrip("*")
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            continue
+        out[Path(name).name] = digest
+    return out
+
+
+def sha256_file(path) -> str:
+    """算文件的 SHA256（约几 MB 的 .deb，秒级）。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def check(local_version: str, timeout: float = TIMEOUT) -> tuple:

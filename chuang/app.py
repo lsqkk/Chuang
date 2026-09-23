@@ -20,11 +20,11 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from . import APP_ID, __version__, config as cfgmod
 from .render import SkyPainter
-from .scene import SkyEngine
+from .scene import SkyEngine, human_hint
 from . import wallpaper as wallmod
 from . import update as upmod
 from . import tray as traymod
-from .weather import WeatherService, geocode
+from .weather import (WeatherService, fallback_timezone, geocode, timezone_for)
 
 # 默认的壁纸跟随间隔（秒）；用户可在菜单里改成 30 秒 / 1 分钟
 WALLPAPER_INTERVAL = 10
@@ -293,11 +293,12 @@ class TimeTravelDialog(Gtk.Window):
 class CityDialog(Gtk.Window):
     """换一个城市（联网搜索；也可以直接输入经纬度）。"""
 
-    def __init__(self, parent, on_pick):
+    def __init__(self, parent, on_pick, on_notice=None):
         super().__init__(modal=True, transient_for=parent, default_width=470,
                          default_height=520)
         self.set_title("换一扇窗")
         self.on_pick = on_pick
+        self.on_notice = on_notice      # 一句话提示（时区没查到之类），可以为空
         self._searching = False
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -333,9 +334,9 @@ class CityDialog(Gtk.Window):
         mbox.append(self.lon_entry)
         manual.set_child(mbox)
         inner.append(manual)
-        btn = Gtk.Button(label="使用这组坐标")
-        btn.connect("clicked", self._manual)
-        inner.append(btn)
+        self.manual_btn = Gtk.Button(label="使用这组坐标")
+        self.manual_btn.connect("clicked", self._manual)
+        inner.append(self.manual_btn)
 
         box.append(inner)
         self.set_child(box)
@@ -411,12 +412,29 @@ class CityDialog(Gtk.Window):
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             self.status.set_text("纬度要在 ±90 之间，经度要在 ±180 之间")
             return
-        offset = int(round(lon / 15.0))
-        offset = max(-12, min(12, offset))
-        tz = f"Etc/GMT{'-' if offset >= 0 else '+'}{abs(offset)}"
+        # 时区要联网问一次（IANA 名字），否则按经度取整的固定偏移在欧洲/北美
+        # 夏天会差整整一小时——网络不通时退回那个偏移，并在状态栏写清楚。
+        self.status.set_text("正在按经纬度确定时区…")
+        self.manual_btn.set_sensitive(False)
+
+        def worker():
+            tz = timezone_for(lat, lon)
+            GLib.idle_add(self._manual_done, lat, lon, tz)
+
+        threading.Thread(target=worker, daemon=True, name="chuang-tz").start()
+
+    def _manual_done(self, lat: float, lon: float, tz: str) -> bool:
+        guessed = not tz
+        if not tz:
+            tz = fallback_timezone(lon)
         self.on_pick(cfgmod.Location(name=f"{lat:.2f}, {lon:.2f}", admin="自定义坐标",
                                      country="", lat=lat, lon=lon, timezone=tz))
+        if guessed:
+            # 窗口这就关了，把话交给主窗口说（toast 会跟着新城市显示）
+            if self.on_notice:
+                self.on_notice("没连上时区服务，先按经度取整时区；夏令时期间可能差一小时")
         self.close()
+        return False
 
 
 class ChuangWindow(Adw.ApplicationWindow):
@@ -465,8 +483,9 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.weather = WeatherService(self._on_weather)
         self.weather.enabled = self.config.mirror_weather
         if self._fake_weather is not None:
+            # 调试用的假天气：照常画，但一个字节都不往外发
             self.weather.weather = self._fake_weather
-            self.weather.enabled = False
+            self.weather.allow_fetch = False
         self.engine.set_location(self.config.location.lat, self.config.location.lon,
                                  self.config.location.timezone)
         if self._fake_weather is None:
@@ -490,7 +509,7 @@ class ChuangWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
     def _parse_fake_time(self):
         import os
-        from datetime import datetime, timedelta
+        from datetime import datetime
         raw = os.environ.get("CHUANG_TIME")
         if not raw:
             return None
@@ -533,9 +552,9 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _init_pin(self) -> bool:
         """GTK4 去掉了 keep-above，这里用 X11 的 _NET_WM_STATE_ABOVE 实现。"""
         try:
-            import Xlib  # noqa: F401
-            return True
-        except ImportError:
+            import importlib.util
+            return importlib.util.find_spec("Xlib") is not None
+        except (ImportError, ValueError):
             return False
 
     def _set_above(self, above: bool) -> bool:
@@ -580,6 +599,13 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.area.set_vexpand(True)
         self.area.set_draw_func(self._on_draw)
         self.area.set_focusable(True)
+        # 整幅画面都是 Cairo 位图，屏幕阅读器只能读到标题栏和菜单——
+        # 至少把"此刻的天气与天色"那句话（信息卡里那句人话）挂成可读的描述。
+        try:
+            self.area.update_property([Gtk.AccessibleProperty.LABEL],
+                                      ["窗外的天空"])
+        except Exception:
+            pass
 
         motion = Gtk.EventControllerMotion()
         motion.connect("motion", self._on_motion)
@@ -897,6 +923,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.config.mirror_weather = want
         self.config.save()
         self.weather.enabled = want
+        self._scene_key = None
         self._ribbon_key = None
         if want:
             self.weather.refresh(force=True)
@@ -909,7 +936,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.area.queue_draw()
 
     def _act_city(self, *_):
-        CityDialog(self, self._set_location).present()
+        CityDialog(self, self._set_location, self.toast).present()
 
     # ------------------------------------------------------------------
     # 桌面壁纸
@@ -918,12 +945,19 @@ class ChuangWindow(Adw.ApplicationWindow):
         return (bool(self.config.wallpaper_show_info),
                 bool(self.config.wallpaper_show_ribbon))
 
+    def _weather_for_paint(self):
+        """作画用的天气：关掉「跟随真实天气」时是 None（见 WeatherService.effective）。"""
+        return self.weather.effective
+
     def _remember_wallpaper(self):
         """第一次动壁纸前，把原来那张记下来，方便还原。
 
         只记"别人的"壁纸：如果此刻挂着的已经是我们自己画的槽位文件，
         就绝不能把它当成"原来的壁纸"——否则「还原成原来的壁纸」还回去的
         是一张过期的天空，用户真正的壁纸就永久丢了。
+
+        连**缩放方式**一起记：接管时我们一定会写 picture-options=zoom（天空得
+        铺满），不记下来的话，「还原」就只能还原图片、还原不了他原来是拉伸/居中。
         """
         if self.config.prev_wallpaper:
             return
@@ -934,6 +968,7 @@ class ChuangWindow(Adw.ApplicationWindow):
             dark = light
         self.config.prev_wallpaper = light
         self.config.prev_wallpaper_dark = dark or light
+        self.config.prev_wallpaper_options = wallmod.current_options()
         self.config.save()
 
     def apply_wallpaper(self, quiet: bool = False) -> None:
@@ -960,10 +995,10 @@ class ChuangWindow(Adw.ApplicationWindow):
             slot = (1 - shown) if shown >= 0 else other
             adopt = True
             self._last_flip_at = _time.time()
-        self.wp.render_now(self.engine.local_now(), self.weather.weather,
+        self.wp.render_now(self.engine.local_now(), self._weather_for_paint(),
                            show_info, show_ribbon, size, slot,
                            lambda ok, msg, slot: self._wallpaper_done(ok, msg, slot, quiet),
-                           adopt=adopt)
+                           adopt=adopt, weather_off=not self.weather.enabled)
         if not quiet:
             self.toast("正在把这扇窗挂到桌面上…", 2.0)
 
@@ -1034,9 +1069,10 @@ class ChuangWindow(Adw.ApplicationWindow):
         size = wallmod.screen_size()
         self._wp_progress = 0
         self.toast("正在画这一天的 96 张天色，约二十秒…", 6.0)
-        self.wp.render_day(self.engine.local_date(), self.weather.weather,
+        self.wp.render_day(self.engine.local_date(), self._weather_for_paint(),
                            show_info, show_ribbon, size, 96,
-                           self._wallpaper_progress, self._wallpaper_day_done)
+                           self._wallpaper_progress, self._wallpaper_day_done,
+                           weather_off=not self.weather.enabled)
 
     def _wallpaper_progress(self, done: int, total: int) -> bool:
         self.painter.ui.toast = f"正在画今天的天色 {done}/{total}"
@@ -1060,12 +1096,14 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.toast("没有记下你原来的壁纸；可以从「设置 → 外观」里挑一张", 5.0)
             return
         ok, msg = wallmod.restore(self.config.prev_wallpaper,
-                                  self.config.prev_wallpaper_dark)
+                                  self.config.prev_wallpaper_dark,
+                                  self.config.prev_wallpaper_options)
         if ok:
             self.set_toggle("wallpaperauto", False)
             self.config.wallpaper_dynamic = False
             self.config.prev_wallpaper = ""
             self.config.prev_wallpaper_dark = ""
+            self.config.prev_wallpaper_options = ""
             self.config.save()
         self.toast(msg, 5.0)
 
@@ -1212,7 +1250,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         if rel is None or not rel.deb_url:
             self.toast("这个版本没有提供 .deb 安装包", 4.0)
             return
-        target = self._download_dir() / rel.deb_name
+        target = self._download_dir() / (Path(rel.deb_name).name or "chuang-update.deb")
         self.toast(f"正在下载 {rel.deb_name}…", 3.0)
 
         def worker():
@@ -1222,19 +1260,24 @@ class ChuangWindow(Adw.ApplicationWindow):
                 with urllib.request.urlopen(req, timeout=60) as resp, \
                         open(target, "wb") as fh:
                     shutil.copyfileobj(resp, fh)
-                GLib.idle_add(self._download_done, True, str(target))
+                ok, why = self._verify_deb(rel, target)
+                GLib.idle_add(self._download_done, True, str(target),
+                              "" if ok else why)
             except Exception as exc:
-                GLib.idle_add(self._download_done, False, str(exc))
+                GLib.idle_add(self._download_done, False, str(exc), "")
 
         threading.Thread(target=worker, daemon=True, name="chuang-deb").start()
 
-    def _download_done(self, ok: bool, info: str) -> bool:
+    def _download_done(self, ok: bool, info: str, warn: str = "") -> bool:
         if ok:
+            tail = f"\n\n【没通过校验，先别急着装】\n{warn}" if warn else ""
             self.toast_detailed(
-                "安装包已经下好了", 14.0,
+                "安装包已经下好并通过校验" if not warn else "安装包已经下好了",
+                20.0 if warn else 14.0,
                 f"安装包：{info}\n\n手动安装（复制到终端里跑）：\n"
                 f"    sudo apt-get install -y -- \"{info}\"\n\n"
-                "或者在菜单里点「下载并安装」，「窗」会自己开一个终端帮你装。")
+                "或者在菜单里点「下载并安装」，「窗」会自己开一个终端帮你装。"
+                + tail)
         else:
             self.toast_detailed("下载失败", 8.0,
                                 f"下载失败：{info}\n\n发布页：{upmod.RELEASES_URL}")
@@ -1254,7 +1297,9 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.toast("上一次安装还没结束，稍等一下…", 3.0)
             return
         self._installing = True
-        target = wallmod.CACHE / "updates" / (rel.deb_name or "chuang-update.deb")
+        # 远端文件名先过一遍 basename：别让 `../` 之类的名字决定往哪写
+        target = wallmod.CACHE / "updates" / (Path(rel.deb_name).name
+                                              or "chuang-update.deb")
         self.toast(f"正在下载 {rel.deb_name}…（大约几 MB）", 5.0)
 
         def worker():
@@ -1265,11 +1310,50 @@ class ChuangWindow(Adw.ApplicationWindow):
                 with urllib.request.urlopen(req, timeout=180) as resp, \
                         open(target, "wb") as fh:
                     shutil.copyfileobj(resp, fh)
+                ok, why = self._verify_deb(rel, target)
+                if not ok:
+                    GLib.idle_add(self._install_verify_failed, rel, str(target), why)
+                    return
                 GLib.idle_add(self._install_ready, rel, str(target))
             except Exception as exc:
                 GLib.idle_add(self._install_download_failed, rel, str(exc))
 
         threading.Thread(target=worker, daemon=True, name="chuang-install").start()
+
+    def _verify_deb(self, rel, path: Path) -> tuple[bool, str]:
+        """用 Release 上的 SHA256SUMS 核对刚下载的 .deb（在后台线程里跑）。
+
+        这一步几乎没有成本，却是整条链路上唯一"内容有没有被动过"的证据：
+        HTTPS 只挡住了传输层，而我们要拿这个二进制去按 root 装。所以
+        **对不上就不装；压根没有校验文件也不装**（把两个摘要摆出来，
+        让用户自己决定要不要手动装）。
+        """
+        if not rel.sums_url:
+            return False, "这次发布里没有 SHA256SUMS 校验文件，没法核对这个包。"
+        try:
+            req = urllib.request.Request(rel.sums_url,
+                                         headers={"User-Agent": upmod.UA})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                table = upmod.parse_sha256sums(resp.read().decode("utf-8", "replace"))
+        except Exception as exc:
+            return False, f"下载 SHA256SUMS 失败：{exc}"
+        want = table.get(Path(rel.deb_name).name)
+        if not want:
+            return False, f"SHA256SUMS 里没有 {rel.deb_name} 这一项，没法核对这个包。"
+        got = upmod.sha256_file(path)
+        if got != want:
+            return False, ("校验不通过：下载到的文件与发布页上的摘要对不上。\n"
+                           f"    期望 {want}\n    实际 {got}")
+        return True, ""
+
+    def _install_verify_failed(self, rel, path: str, why: str) -> bool:
+        self._installing = False
+        self.toast_detailed("没有安装：安装包没通过校验", 20.0,
+                            f"{why}\n\n安装包已经下载到：\n    {path}\n\n"
+                            "如果你确认这个文件没问题，可以自己手动装：\n"
+                            f"    sudo apt-get install -y -- \"{path}\"\n\n"
+                            f"发布页：{upmod.RELEASES_URL}")
+        return False
 
     def _install_download_failed(self, rel, why: str) -> bool:
         self._installing = False
@@ -1442,7 +1526,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         try:
             self.tray = traymod.Tray(self.menu_model, self._tray_activate,
                                      self._tray_lookup,
-                                     prefix_items=[("显示「窗」", "win.show")])
+                                     prefix_items=[("显示「窗」", "win.show")],
+                                     activate_action="win.show")
             self.tray.start()
         except Exception:
             self.tray = None
@@ -1455,7 +1540,13 @@ class ChuangWindow(Adw.ApplicationWindow):
             return self.app.lookup_action(short)
         return self.lookup_action(short)
 
-    def _tray_activate(self, name: str, target=None):
+    def _tray_activate(self, name: str = "win.show", target=None):
+        """托盘图标被点（双击 / 键盘激活）时把窗口叫到前面。
+
+        默认参数不能省：tray 的 Activate/SecondaryActivate 分支不带参数调用它，
+        少一个默认值就是一个 TypeError——D-Bus 方法处理器抛异常意味着这次调用
+        永远不会有回复，日志里还会多一条 traceback。
+        """
         self.activate(name, target)
 
     def _act_autostart(self, want: bool):
@@ -1563,7 +1654,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.weather.set_location(location.lat, location.lon, location.timezone)
         self._scene_key = None
         self._ribbon_key = None
-        self.painter._skyline.clear()
+        self.painter.invalidate_location()   # 楼群数据 + 所有离屏缓存（含城市天际线）
         self._set_preview(None)
         self.painter.ui.ribbon_key = None
         self.painter.ui.ribbon_surface = None
@@ -1616,26 +1707,31 @@ class ChuangWindow(Adw.ApplicationWindow):
         ui = self.painter.ui
         now = self._now()
         when = ui.preview_dt if ui.preview_dt else now
+        weather = self._weather_for_paint()
         key = (when.strftime("%Y-%m-%d %H:%M"),
-               getattr(self.weather.weather, "fetched_at", 0),
+               getattr(weather, "fetched_at", 0),
+               self.weather.enabled,
                self.config.location.name)
         if key != self._scene_key or self._scene is None:
             self._scene = self.engine.build(
-                when, self.weather.weather,
+                when, weather,
                 preview=ui.preview_dt is not None,
-                location_label=self.config.location.label)
+                location_label=self.config.location.label,
+                weather_off=not self.weather.enabled)
             self._scene_key = key
         return self._scene
 
     def _refresh_ribbon(self, scene):
         day = scene.when.replace(hour=0, minute=0, second=0, microsecond=0)
+        weather = self._weather_for_paint()
         key = (day.strftime("%Y-%m-%d"),
-               getattr(self.weather.weather, "fetched_at", 0),
+               getattr(weather, "fetched_at", 0),
+               self.weather.enabled,
                self.config.location.name)
         if key == self._ribbon_key:
             return
         self._ribbon_key = key
-        self.painter.ui.ribbon = self.engine.ribbon(day, self.weather.weather)
+        self.painter.ui.ribbon = self.engine.ribbon(day, weather)
         self.painter.ui.ribbon_key = key
         self.painter.ui.ribbon_surface = None
 
@@ -1686,6 +1782,13 @@ class ChuangWindow(Adw.ApplicationWindow):
             # 再打开就会停在旧的一分钟上（看起来像"时间没刷新"）。
             self.title_widget.set_subtitle(
                 f"{self.config.location.label} · {clock.strftime('%H:%M')}")
+            try:                       # 给屏幕阅读器一句"此刻的窗外"
+                sc = self._current_scene()
+                self.area.update_property(
+                    [Gtk.AccessibleProperty.DESCRIPTION],
+                    [f"{self.config.location.label}，{sc.period_name}：{human_hint(sc)}"])
+            except Exception:
+                pass
             self.weather.maybe_refresh()
         # 壁纸跟随：按秒表走，不受"分钟变化"限制（收进托盘也照常更新）
         if self.config.wallpaper_auto and now >= self._next_wallpaper:
@@ -1921,6 +2024,7 @@ class ChuangApp(Adw.Application):
                 or wallmod.is_our_uri(self.config.prev_wallpaper_dark)):
             self.config.prev_wallpaper = ""
             self.config.prev_wallpaper_dark = ""
+            self.config.prev_wallpaper_options = ""
             self.config.save()
 
     def installed_launcher(self) -> list:

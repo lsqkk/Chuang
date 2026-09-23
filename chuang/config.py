@@ -8,9 +8,21 @@ import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "chuang"
+def _xdg_dir(name: str, fallback: Path) -> Path:
+    """XDG 目录：变量没设、或者被设成了空串，都退回默认值。
+
+    空串是个真会咬人的坑：`os.environ.get("XDG_CONFIG_HOME", 默认)` 遇到
+    `XDG_CONFIG_HOME=` 时拿到的是 ""，`Path("")` 就是当前目录——于是配置会被
+    悄悄写进"运行时所在的那个目录"里（从别处启动一次就多出一份配置）。
+    """
+    value = os.environ.get(name)
+    return Path(value) if value else fallback
+
+
+_HOME = Path.home()
+CONFIG_DIR = _xdg_dir("XDG_CONFIG_HOME", _HOME / ".config") / "chuang"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-AUTOSTART_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart"
+AUTOSTART_DIR = _xdg_dir("XDG_CONFIG_HOME", _HOME / ".config") / "autostart"
 AUTOSTART_FILE = AUTOSTART_DIR / "chuang.desktop"
 
 # 壁纸跟随此刻的可选间隔（秒）
@@ -59,6 +71,7 @@ class Config:
     wallpaper_show_ribbon: bool = False
     prev_wallpaper: str = ""
     prev_wallpaper_dark: str = ""
+    prev_wallpaper_options: str = ""     # 原来是 zoom / scaled / centered / wallpaper
     wallpaper_slot: int = 0
     fov: float = 190.0
     window_w: int = 960
@@ -192,7 +205,6 @@ def guess_location() -> Location:
 
     # 兜底：用 UTC 偏移换算出经度，纬度取中纬
     from datetime import datetime
-    from .astronomy import to_utc
     now = datetime.now()
     if now.tzinfo is None:
         now = now.astimezone()
