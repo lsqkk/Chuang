@@ -596,10 +596,18 @@ class ChuangWindow(Adw.ApplicationWindow):
         scroll.connect("scroll", self._on_scroll)
         self.area.add_controller(scroll)
 
+        # 快捷键接在窗口的**捕获阶段**上：事件自窗口往下走时就先被这里拿走，
+        # 焦点落在标题栏那颗"图钉"或菜单按钮上时，空格也不会被按钮当"激活"吃掉。
+        #
+        # 这里踩过的坑：GTK 4.6 上 ShortcutController 的 MANAGED / GLOBAL 作用域
+        # 对送到窗口的按键**不会触发**（实测只有 LOCAL 会），所以别用它来抢救
+        # 快捷键；老老实实用 EventControllerKey + 捕获阶段，并在开窗时把焦点交给
+        # 画面本身（否则默认焦点可能停在标题栏的按钮上，空格按下去像是在按按钮）。
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key)
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         self.add_controller(keys)
+        self.connect("map", lambda *_: (self.area.grab_focus(), False)[1])
 
         self.title_widget = Adw.WindowTitle(title="窗", subtitle="")
         header = Adw.HeaderBar()
@@ -612,12 +620,16 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.pin_button.set_sensitive(False)
             self.pin_button.set_tooltip_text("需要 python3-xlib 才能置顶")
         self.pin_button.connect("toggled", self._on_pin_toggled)
+        # 鼠标点标题栏的按钮不该把键盘焦点从画面上抢走：
+        # 否则点过一次图钉，之后按空格就变成"再按一次图钉"，卡片反而不动了。
+        self.pin_button.set_focus_on_click(False)
         header.pack_end(self.pin_button)
 
         menu = self._build_menu()
         self.menu_model = menu
         self.menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic",
                                           menu_model=menu, tooltip_text="更多")
+        self.menu_button.set_focus_on_click(False)
         header.pack_end(self.menu_button)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1774,30 +1786,50 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._set_preview(base + timedelta(minutes=step))
         return True
 
-    def _on_key(self, _c, keyval, _code, _state):
+    # ---- 快捷键（窗口捕获阶段的键盘控制器）----------------------------
+    def _key_info(self):
+        """空格：显示 / 隐藏「此刻的事实」。
+
+        顺带把菜单（与托盘）里那一项「显示此刻的事实」的勾同步上——
+        不然用空格关掉卡片之后，菜单里那个勾还挂着。
+        """
+        want = not self.painter.ui.show_info
+        self.set_toggle("info", want)
+        self.painter.ui.show_info = want
+        self.area.queue_draw()
+        return True
+
+    def _key_escape(self):
         ui = self.painter.ui
-        name = Gdk.keyval_name(keyval)
-        from datetime import timedelta
-        if name == "space":
-            ui.show_info = not ui.show_info
-            self.area.queue_draw()
-            return True
-        if name == "Escape":
-            if ui.preview_dt is not None:
-                self._set_preview(None)
-                return True
-            if self.is_fullscreen():
-                self.unfullscreen()
-                return True
-            return False
-        if name in ("Home", "KP_Home"):
+        if ui.preview_dt is not None:
             self._set_preview(None)
             return True
-        if name in ("Left", "Right", "KP_Left", "KP_Right"):
-            base = ui.preview_dt or self._now()
-            step = -10 if "Left" in name else 10
-            self._set_preview(base + timedelta(minutes=step))
+        if self.is_fullscreen():
+            self.unfullscreen()
             return True
+        return False
+
+    def _key_home(self):
+        self._set_preview(None)
+        return True
+
+    def _key_step(self, minutes: int):
+        from datetime import timedelta
+        ui = self.painter.ui
+        base = ui.preview_dt or ui.hover_dt or self._now()
+        self._set_preview(base + timedelta(minutes=minutes))
+        return True
+
+    def _on_key(self, _c, keyval, _code, _state):
+        name = Gdk.keyval_name(keyval)
+        if name == "space":
+            return self._key_info()
+        if name == "Escape":
+            return self._key_escape()
+        if name in ("Home", "KP_Home"):
+            return self._key_home()
+        if name in ("Left", "Right", "KP_Left", "KP_Right"):
+            return self._key_step(-10 if "Left" in name else 10)
         return False
 
     # ------------------------------------------------------------------

@@ -34,6 +34,21 @@ ALT_TOP = 88.0
 ALT_GROUND = -9.0
 
 
+def scene_height(h: float) -> float:
+    """"景色"占的高度：窗口底下留一条空给系统任务栏 / dock。
+
+    很多 Linux 桌面把面板或 dock 放在屏幕底部（Plank、Cairo-Dock、扩展版
+    Dash to Dock、KDE 面板……），窗口最大化和"贴底摆放"时，窗口最下面那一条
+    会被面板压住——原来「今日天色」长卷画在 94% 高度上，正好被挡住。
+
+    面板的高度是"多少像素"而不是"百分之几"，所以这里按**像素**倒推需要的余量：
+    让长卷下沿离窗口底边约 65px（长卷本身在 94% 高度上，所以余量要比 65 小），
+    景色整体按这个略矮的高度排版，最下面那条留给窗台继续铺下去。
+    """
+    reserve = clamp(64.0 + 24.0 - 0.06 * h, 14.0, h * 0.14)
+    return h - reserve
+
+
 def rgba(color, alpha=1.0):
     return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0, alpha)
 
@@ -386,6 +401,7 @@ class SkyPainter:
         self._sill_key = None
         self._layout_cache: dict = {}
         self._street_roster: list | None = None
+        self._street_trees: list | None = None
         # 由窗口注入"现在几点"的回调，让街上的人车按真实时间连续移动
         self.clock = None
 
@@ -403,32 +419,34 @@ class SkyPainter:
         fov = self._fov(w, h, scene)
         self.fx.sync(scene, now)
         self.fx.advance(dt, scene, now, w, h)
+        # 景色按 hs 排版，底下的余量留给系统面板（见 scene_height）
+        hs = scene_height(h)
 
         sun_x, sun_d = x_for_az(scene.sun_az, az0, fov, w)
         glow_x = clamp(sun_x, -0.35 * w, 1.35 * w)
-        sun_y = y_for_alt(max(scene.sun_alt, -3.0), h)
+        sun_y = y_for_alt(max(scene.sun_alt, -3.0), hs)
         direct = self._direct_light(scene)
 
-        self._draw_sky(cr, w, h, scene, glow_x, sun_y)
-        self._draw_stars(cr, w, h, scene, az0, fov)
-        self._draw_sun(cr, w, h, scene, sun_x, sun_d, fov, direct)
-        self._draw_moon(cr, w, h, scene, az0, fov)
-        self._draw_clouds(cr, w, h, scene, az0, fov)
-        self._draw_plane(cr, w, h, scene)
+        self._draw_sky(cr, w, hs, scene, glow_x, sun_y)
+        self._draw_stars(cr, w, hs, scene, az0, fov)
+        self._draw_sun(cr, w, hs, scene, sun_x, sun_d, fov, direct)
+        self._draw_moon(cr, w, hs, scene, az0, fov)
+        self._draw_clouds(cr, w, hs, scene, az0, fov)
+        self._draw_plane(cr, w, hs, scene)
         light = self._light(scene, az0, direct)
-        self._draw_skyline(cr, w, h, scene, light)
-        self._draw_ground(cr, w, h, scene, az0, fov, light)
-        self._draw_street(cr, w, h, scene, light)
+        self._draw_skyline(cr, w, hs, scene, light)
+        self._draw_ground(cr, w, hs, scene, az0, fov, light)
+        self._draw_street(cr, w, hs, scene, light)
         self._draw_vignette(cr, w, h, scene)
-        self._draw_sill(cr, w, h, scene, az0, fov, sun_x, direct)
+        self._draw_sill(cr, w, h, scene, az0, fov, sun_x, direct, hs)
         self._draw_precip(cr, w, h, scene)
         self._draw_flash(cr, w, h, scene)
         if chrome and self.ui.show_ribbon:
-            self._draw_ribbon(cr, w, h, scene)
+            self._draw_ribbon(cr, w, hs, scene)
         if chrome and self.ui.show_info:
             self._draw_info(cr, w, h, scene, az0, fov, direct)
         if chrome:
-            self._draw_toast(cr, w, h)
+            self._draw_toast(cr, w, hs)
 
     # ------------------------------------------------------------------
     def _fov(self, w: float, h: float, scene: Scene) -> float:
@@ -942,6 +960,8 @@ class SkyPainter:
         """地平线之下、窗台之前的那条街上的人与车。"""
         if self._street_roster is None:
             self._street_roster = street.roster(self.fx.seed * 7 + 13)
+        if self._street_trees is None:
+            self._street_trees = street.trees(self.fx.seed * 5 + 3)
         ui = self.ui
         near_col = self._colors(scene)
         # 时间取"正在走动的墙钟"，而不是每分钟才重建一次的 scene.when，
@@ -963,7 +983,7 @@ class SkyPainter:
         t = (when.hour * 3600 + when.minute * 60 + when.second
              + getattr(when, "microsecond", 0) / 1e6)
         street.draw(cr, w, h, scene, self._street_roster, t, light, near_col,
-                    self._layers(scene).lamps)
+                    self._layers(scene).lamps, self._street_trees or ())
 
     def _lit_fraction(self, scene: Scene) -> float:
         """此刻有多少比例的窗户亮着灯。"""
@@ -1062,10 +1082,12 @@ class SkyPainter:
     # ------------------------------------------------------------------
     # 窗台：受光、光斑、那盆小植物与它的影子
     # ------------------------------------------------------------------
-    def _draw_sill(self, cr, w, h, scene: Scene, az0, fov, sun_x, direct):
+    def _draw_sill(self, cr, w, h, scene: Scene, az0, fov, sun_x, direct,
+                   hs=None):
         amb = self._ambient(scene)
+        hs = hs or h      # 窗台的排版高度（底下那条留给系统面板）
         # 窗台 + 那盆植物也是静态的（只随光与太阳位置变），同样缓存。
-        key = (int(w), int(h), round(amb * 60), round(direct * 60),
+        key = (int(w), int(h), int(hs), round(amb * 60), round(direct * 60),
                round(sun_x / 3.0), round(scene.sun_alt * 4),
                round(scene.sun_az * 4), round(fov))
         if (self._sill_surf is not None and self._sill_key == key
@@ -1076,21 +1098,24 @@ class SkyPainter:
             return
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(w), int(h))
         c2 = cairo.Context(surf)
-        self._paint_sill(c2, w, h, scene, az0, fov, sun_x, direct)
+        self._paint_sill(c2, w, h, scene, az0, fov, sun_x, direct, hs)
         self._sill_surf = surf
         self._sill_key = key
         cr.set_source_surface(surf, 0, 0)
         cr.paint()
 
-    def _paint_sill(self, cr, w, h, scene: Scene, az0, fov, sun_x, direct):
+    def _paint_sill(self, cr, w, h, scene: Scene, az0, fov, sun_x, direct,
+                    hs=None):
         mu = scene.mood
         amb = self._ambient(scene)
-        y0 = SILL_Y * h
-        sh = h - y0
+        hs = hs or h
+        y0 = SILL_Y * hs
+        sill_h = hs - y0            # 露出来的台面（"景色"里的那一段）
+        sh = h - y0                 # 一直到窗口最底下（含留给面板的余量）
         horizon01 = tuple(c / 255 for c in mu.horizon)
 
         # 窗框的下框：一条横在街与窗台之间的木框，把"窗外"和"窗里"分开
-        rail_h = h * 0.012
+        rail_h = hs * 0.012
         frame = mix_rgb((0.20, 0.185, 0.175), horizon01, 0.16)
         frame = shade(frame, 0.26 + 0.66 * amb)
         day_tone = mix_rgb((0.54, 0.52, 0.49), horizon01, 0.22)
@@ -1105,9 +1130,10 @@ class SkyPainter:
         cr.rectangle(0, y0, w, rail_h)
         cr.fill()
         cr.set_source_rgba(0, 0, 0, 0.28)
-        cr.rectangle(0, y0 + rail_h, w, max(1.0, h * 0.0035))
+        cr.rectangle(0, y0 + rail_h, w, max(1.0, hs * 0.0035))
         cr.fill()
-        y0 = y0 + rail_h + max(1.0, h * 0.0035)
+        y0 = y0 + rail_h + max(1.0, hs * 0.0035)
+        sill_h -= (y0 - SILL_Y * hs)
         sh = h - y0
 
         g = cairo.LinearGradient(0, y0, 0, h)
@@ -1118,32 +1144,33 @@ class SkyPainter:
         cr.rectangle(0, y0, w, sh)
         cr.fill()
         # 窗框投在窗台上的阴影
-        shadow = cairo.LinearGradient(0, y0, 0, y0 + sh * 0.55)
+        shadow = cairo.LinearGradient(0, y0, 0, y0 + sill_h * 0.55)
         shadow.add_color_stop_rgba(0, 0, 0, 0, 0.30)
         shadow.add_color_stop_rgba(0.45, 0, 0, 0, 0.10)
         shadow.add_color_stop_rgba(1, 0, 0, 0, 0)
         cr.set_source(shadow)
-        cr.rectangle(0, y0, w, sh * 0.55)
+        cr.rectangle(0, y0, w, sill_h * 0.55)
         cr.fill()
         cr.set_source_rgba(1, 1, 1, 0.04 + 0.10 * amb)
         cr.rectangle(0, y0, w, 1.2)
         cr.fill()
 
         # 窗台是块石头：拉一点细纹与几道浅浅的石缝，免得是一整片平色
+        grain_h = min(sh, hs * 0.10)
         cr.save()
-        cr.rectangle(0, y0, w, min(sh, h * 0.09))
+        cr.rectangle(0, y0, w, grain_h)
         cr.clip()
         for i in range(26):
             frac = (i * 0.041) % 1.0
             seed = (i * 7919) % 997 / 997.0
-            yy = y0 + min(sh, h * 0.09) * frac
+            yy = y0 + grain_h * frac
             cr.set_source_rgba(0, 0, 0, 0.03 + 0.05 * seed)
             cr.rectangle(0, yy, w, 0.8 + 0.8 * seed)
             cr.fill()
         for i in range(4):
             xx = w * ((i + 0.5) / 4.0) + (i % 2) * w * 0.03
             cr.set_source_rgba(0, 0, 0, 0.05)
-            cr.rectangle(xx, y0, max(0.8, w * 0.0012), min(sh, h * 0.09))
+            cr.rectangle(xx, y0, max(0.8, w * 0.0012), grain_h)
             cr.fill()
         cr.restore()
 
@@ -1154,8 +1181,8 @@ class SkyPainter:
                 px = clamp(sun_x, -0.15 * w, 1.15 * w)
                 low = clamp(1.0 - scene.sun_alt / 35.0, 0.0, 1.0)
                 rx = w * lerp(0.20, 0.46, low)
-                ry = sh * lerp(0.55, 1.25, low)
-                py = y0 + sh * 0.42
+                ry = sill_h * lerp(0.55, 1.25, low)
+                py = y0 + sill_h * 0.42
                 cr.save()
                 cr.set_operator(cairo.OPERATOR_ADD)
                 spot = cairo.RadialGradient(px, py, 0, px, py, max(rx, ry))
@@ -1177,11 +1204,11 @@ class SkyPainter:
         # 台面纹理
         cr.set_source_rgba(0, 0, 0, 0.045)
         for i in range(1, 5):
-            yy = y0 + sh * (i / 5.2)
+            yy = y0 + sill_h * (i / 5.2)
             cr.rectangle(0, yy, w, 1)
             cr.fill()
 
-        self._draw_plant(cr, w, h, scene, az0, fov, direct, lit)
+        self._draw_plant(cr, w, hs, scene, az0, fov, direct, lit)
 
     def _plant_shapes(self, cr, x, y, scale, green=(0.20, 0.40, 0.26), flat=None):
         """在 (x, y) 画一盆小植物：y 是花盆底，scale 由窗口高度决定。

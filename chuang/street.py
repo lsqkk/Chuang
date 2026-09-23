@@ -74,6 +74,8 @@ class Actor:
     bob: float
     variant: int = 0   # 车型 / 行人的样子
     colour: tuple = (0.6, 0.6, 0.6)
+    rank: int = -1     # 在这条道（这一群）里的编号，决定"这一趟谁上路"
+    total: int = 0     # 这一群一共几个（0 = 不按趟数调度，永远上路）
 
 
 def roster(seed: int) -> list[Actor]:
@@ -85,67 +87,84 @@ def roster(seed: int) -> list[Actor]:
       · 公交 ~14-18 秒（0.055-0.072）
       · 自行车 ~20-28 秒（0.036-0.050）
       · 行人 ~53-83 秒（0.012-0.019）——散步的速度，比车慢一个数量级
+
+    同一条车道上的车**速度一致、发车时间均匀错开**：于是不会出现"两辆车叠成
+    一辆"，也不会互相追尾。真正"路上有几辆车"由 activity() 按时刻与天气决定
+    （班底比路上能同时看到的车多，上不上的都在画面外决定）。
     """
     rnd = random.Random(seed)
     actors: list[Actor] = []
     # 车道：远处那条向左开，近处那条向右开
     variants = (0, 0, 1, 2, 0, 3, 1, 4)      # 轿车多，也有掀背/SUV/厢式/出租
-    for i in range(8):
-        near = i % 2 == 0
-        variant = variants[i % len(variants)]
-        colour = (_CAR_COLORS[7] if variant == 4
-                  else _CAR_COLORS[rnd.randrange(len(_CAR_COLORS))])
+    bus_colours = ((0.36, 0.46, 0.54), (0.66, 0.32, 0.24))
+    per_lane = 6
+    for lane, (dirn, d0, d1) in enumerate(((-1, 0.50, 0.62), (1, 0.72, 0.82))):
+        lane_speed = rnd.uniform(0.086, 0.112) * dirn
+        for i in range(per_lane):
+            variant = variants[(i + lane * 3) % len(variants)]
+            colour = (_CAR_COLORS[7] if variant == 4
+                      else _CAR_COLORS[rnd.randrange(len(_CAR_COLORS))])
+            actors.append(Actor(
+                kind="car",
+                depth=rnd.uniform(d0, d1),
+                # 同一条道上的车速度**完全一致**：差一点点都会在几十分钟后
+                # 累积成"两辆车叠在一起"（相位差被速度差吃掉）
+                speed=lane_speed,
+                phase=(i + rnd.uniform(-0.05, 0.05)) / per_lane,
+                when="always",
+                umbrella=False,
+                tone=rnd.uniform(0.9, 1.1),
+                bob=0.0,
+                variant=variant,
+                colour=colour,
+                rank=i, total=per_lane + 1,
+            ))
+        # 每条道上再排一辆公交：插在两辆车中间，速度跟这条道一致
         actors.append(Actor(
-            kind="car",
-            depth=rnd.uniform(0.48, 0.64) if not near else rnd.uniform(0.72, 0.82),
-            speed=rnd.uniform(0.080, 0.115) * (1 if near else -1),
-            phase=rnd.random(),
-            when="always",
-            umbrella=False,
-            tone=rnd.uniform(0.9, 1.1),
-            bob=0.0,
-            variant=variant,
-            colour=colour,
-        ))
-    actors.append(Actor("bus", rnd.uniform(0.52, 0.58), rnd.uniform(-0.072, -0.055),
-                        rnd.random(), "always", False, 0.95, 0.0, 0,
-                        (0.36, 0.46, 0.54)))
-    actors.append(Actor("bus", rnd.uniform(0.76, 0.82), rnd.uniform(0.055, 0.072),
-                        rnd.random(), "always", False, 1.0, 0.0, 0,
-                        (0.66, 0.32, 0.24)))
+            "bus", rnd.uniform(d0, d1), lane_speed,
+            (0.5 + rnd.uniform(-0.04, 0.04)) / per_lane,
+            "always", False, rnd.uniform(0.92, 1.0), 0.0, 0, bus_colours[lane],
+            per_lane, per_lane + 1))
     # 骑车的人：晴天多，雨雪少（靠 alpha 淡出）
-    for _ in range(3):
+    for i in range(4):
         actors.append(Actor(
             kind="cyclist",
             depth=rnd.uniform(0.62, 0.80),
-            speed=rnd.uniform(0.036, 0.050) * (1 if rnd.random() < 0.5 else -1),
-            phase=rnd.random(),
+            speed=(0.042 if i % 2 == 0 else 0.046) * (1 if i < 2 else -1),
+            phase=(i % 2 + rnd.uniform(-0.12, 0.12)) / 2,
             when="day",
             umbrella=False,
             tone=rnd.uniform(0.8, 1.1),
             bob=rnd.uniform(0, TAU),
             colour=_CLOTHES[rnd.randrange(len(_CLOTHES))],
+            rank=i % 2, total=2,
         ))
     # 行人：贴最前面走（离窗台最近）
-    for _ in range(9):
+    for i in range(12):
+        back = i % 2
         variant = rnd.choices((0, 1, 2, 3, 4), weights=(5, 2, 1, 1, 2))[0]
         actors.append(Actor(
             kind="ped",
             depth=rnd.uniform(0.88, 1.0),
-            speed=rnd.uniform(0.012, 0.019) * (1 if rnd.random() < 0.5 else -1),
-            phase=rnd.random(),
+            speed=(0.0145 if back else 0.0165),
+            phase=(i // 2 + rnd.uniform(-0.16, 0.16)) / 6.0,
             when=rnd.choice(("always", "always", "always", "day", "night")),
             umbrella=rnd.random() < 0.8,
             tone=rnd.uniform(0.7, 1.2),
             bob=rnd.uniform(0, TAU),
             variant=variant,
             colour=_CLOTHES[rnd.randrange(len(_CLOTHES))],
+            rank=i // 2, total=6,
         ))
     return actors
 
 
 def _visibility(a: Actor, scene) -> float:
-    """这个人在此刻路上出现的程度 0-1：昼夜偏好 × 天气。"""
+    """这一个"是白天的人还是夜里的人"：0-1。
+
+    天气与"这个点路上有几个"由 activity() 决定（见下），这里只管昼夜偏好，
+    免得同一件事被扣两次。
+    """
     day = clamp((scene.sun_alt + 6.0) / 8.0, 0.0, 1.0)
     if a.when == "day":
         v = day
@@ -153,32 +172,135 @@ def _visibility(a: Actor, scene) -> float:
         v = 1.0 - day
     else:
         v = 1.0
-    if scene.has_weather:
-        kind = scene.precip_kind
-        strength = scene.precip_strength
-        if kind != "none" and strength > 0.15:
-            if a.kind == "cyclist":
-                v *= clamp(1.0 - 1.6 * strength, 0.0, 1.0)
-            elif a.kind == "ped":
-                v *= clamp(1.0 - 0.5 * strength, 0.2, 1.0)
-            else:
-                v *= clamp(1.0 - 0.2 * strength, 0.6, 1.0)
-        if scene.fog:
-            v *= 0.55
     return clamp(v, 0.0, 1.0)
 
 
+# --------------------------------------------------------------------------
+# 这个点路上该有多少人、多少车
+# --------------------------------------------------------------------------
+
+def _hash01(*parts) -> float:
+    """稳定的小伪随机数（同一趟车、同一时刻永远同样的结果）。"""
+    h = 2166136261
+    for p in parts:
+        v = int(p * 10007.0) & 0xFFFFFFFF
+        h ^= v & 0xFFFF
+        h = (h * 16777619) & 0xFFFFFFFF
+        h ^= (v >> 16) & 0xFFFF
+        h = (h * 16777619) & 0xFFFFFFFF
+    return (h % 100000) / 100000.0
+
+
+# 一天里的"车流"与"人流"（0-1，按本地时刻插值）
+_CAR_WEEKDAY = ((0, 0.10), (4.5, 0.06), (6.0, 0.30), (7.5, 0.85), (8.5, 1.00),
+                (9.5, 0.80), (12.0, 0.62), (15.0, 0.60), (17.0, 0.90),
+                (18.3, 1.00), (19.5, 0.78), (21.0, 0.55), (23.0, 0.26),
+                (24, 0.10))
+_CAR_WEEKEND = ((0, 0.26), (5.0, 0.10), (8.0, 0.30), (10.5, 0.70), (14.0, 0.82),
+                (17.0, 0.86), (19.0, 0.72), (22.0, 0.55), (24, 0.26))
+_PED_WEEKDAY = ((0, 0.05), (5.0, 0.12), (6.5, 0.38), (8.0, 1.00), (9.5, 0.42),
+                (12.0, 0.58), (14.0, 0.40), (16.0, 0.46), (18.0, 1.00),
+                (19.5, 0.62), (21.0, 0.36), (23.0, 0.12), (24, 0.05))
+_PED_WEEKEND = ((0, 0.20), (6.0, 0.06), (9.0, 0.30), (11.0, 0.68), (14.0, 0.82),
+                (17.0, 0.76), (19.0, 0.70), (22.0, 0.46), (24, 0.20))
+
+
+def _curve(hour: float, points) -> float:
+    """按控制点线性插值一天里的曲线（points 覆盖 0-24 点）。"""
+    hour = hour % 24.0
+    for i in range(len(points) - 1):
+        h0, v0 = points[i]
+        h1, v1 = points[i + 1]
+        if h0 <= hour <= h1:
+            t = 0.0 if h1 == h0 else (hour - h0) / (h1 - h0)
+            return v0 + (v1 - v0) * t
+    return points[-1][1]
+
+
+def activity(when, scene) -> dict[str, float]:
+    """此刻各类角色上路的密度 0-1：由**时刻 × 星期 × 天气**决定。
+
+    工作日两个高峰（8 点、18 点）车最多、人也最多；周末的高峰晚一点、平一点；
+    凌晨 2-5 点几乎没人；下雨行人明显变少、骑车几乎消失，雪天更少；
+    起雾时大家都少一些。
+    """
+    hour = when.hour + when.minute / 60.0 + when.second / 3600.0
+    weekend = when.weekday() >= 5
+    cars = _curve(hour, _CAR_WEEKEND if weekend else _CAR_WEEKDAY)
+    peds = _curve(hour, _PED_WEEKEND if weekend else _PED_WEEKDAY)
+    # 公交有自己的班次：白天一直在跑，夜里稀，但不跟着高峰那么陡
+    buses = clamp(0.18 + 0.85 * cars, 0.0, 1.0)
+    cyclists = peds * clamp(0.55 + 0.45 * (1.0 - abs(hour - 13.0) / 9.0), 0.0, 1.0)
+
+    if scene.has_weather:
+        s = clamp(scene.precip_strength, 0.0, 1.0)
+        if scene.precip_kind == "rain":
+            peds *= 1.0 - 0.62 * s
+            cyclists *= 1.0 - 0.88 * s
+            cars *= 1.0 - 0.12 * s
+            buses *= 1.0 - 0.08 * s
+        elif scene.precip_kind == "snow":
+            peds *= 1.0 - 0.45 * s
+            cyclists *= 1.0 - 0.92 * s
+            cars *= 1.0 - 0.35 * s
+            buses *= 1.0 - 0.25 * s
+        if scene.thunder:
+            peds *= 0.55
+            cyclists *= 0.4
+        if scene.fog:
+            peds *= 0.8
+            cars *= 0.85
+    return {"car": clamp(cars, 0, 1), "bus": clamp(buses, 0, 1),
+            "ped": clamp(peds, 0, 1), "cyclist": clamp(cyclists, 0, 1)}
+
+
+def _on_road(a: Actor, t: float, density: float) -> bool:
+    """这一趟它上不上路。
+
+    "路上有几辆车"要跟着时刻与天气走，但又不能让人看见车在马路上凭空出现：
+    每辆车一趟一趟地过画面（相位 + 速度 × 时间），每过一趟就是"第几趟"；
+    每趟按当时的密度决定**这一群里放几辆上路**，具体哪几辆则逐趟轮换。
+    这样：
+      · 数量是确定的（一群体 6 辆、密度 0.5 就是 3 辆），不会一会儿满街一会儿空街；
+      · 轮换发生在画面外（车正好绕回起点那一刻），看不见谁消失；
+      · 高密度时按"均匀挑"的次序选车，留下的车在街上仍然分布得开。
+    """
+    if density >= 0.999:
+        return True
+    if density <= 0.002:
+        return False
+    if a.total > 0 and a.rank >= 0:
+        span = 1.30
+        slot = math.floor((a.phase + a.speed * t) / span)
+        want = int(round(density * a.total))
+        if want >= a.total:
+            return True
+        if want <= 0:
+            return False
+        rot = slot % a.total
+        # 均匀挑选（Bresenham 那套）：6 选 2 会挑到第 3、第 6 辆，而不是前两辆
+        i = (a.rank + rot) % a.total
+        return math.floor((i + 1) * want / a.total) > math.floor(i * want / a.total)
+    span = 1.30
+    slot = math.floor((a.phase + a.speed * t) / span)
+    return _hash01(a.phase * 977.0, a.depth * 613.0, slot * 0.6180339) < density
+
+
 def draw(cr, w: float, h: float, scene, actors: list[Actor], t: float,
-         light, base_col, lamps=()) -> None:
+         light, base_col, lamps=(), trees=()) -> None:
     """把人和车画在地面带上（在剪影之上、窗台之下）。"""
     if not actors:
         return
+    _trees(cr, w, h, scene, light, trees, t)
     _lamps(cr, w, h, scene, light, lamps)
     rain = (scene.has_weather and scene.precip_kind == "rain"
             and scene.precip_strength > 0.15)
+    dens = activity(scene.when, scene)
     for a in sorted(actors, key=lambda a: a.depth):
         vis = _visibility(a, scene)
         if vis <= 0.03:
+            continue
+        if not _on_road(a, t, dens.get(a.kind, 0.6)):
             continue
         x = ((a.phase + a.speed * t) % 1.3 - 0.15) * w
         y = (ZONE_TOP + (ZONE_BOTTOM - ZONE_TOP) * a.depth) * h
@@ -249,6 +371,108 @@ def _cast_shadow(cr, x, y, light, height, width, strength=1.0) -> None:
 # --------------------------------------------------------------------------
 # 路灯
 # --------------------------------------------------------------------------
+
+def trees(seed: int) -> list[tuple[float, float, int]]:
+    """路边的行道树：(横向位置 0-1, 大小系数, 形状种子)。
+
+    它们站在**远侧人行道**上——比车道更远，所以按透视只能比人和车"矮一档"：
+    树冠大致到旁边那几栋楼的二三层，不挡城市，也不抢街上的人。
+    """
+    rnd = random.Random((seed ^ 0x1F2E3D4C) & 0xFFFFFFFF)
+    out: list[tuple[float, float, int]] = []
+    x = rnd.uniform(0.03, 0.10)
+    while x < 0.98:
+        out.append((round(x, 4), rnd.uniform(0.82, 1.12), rnd.randrange(1000)))
+        x += rnd.uniform(0.11, 0.26)
+    return out
+
+
+def _trees(cr, w, h, scene, light, trees, t) -> None:
+    if not trees:
+        return
+    amb = clamp(light.ambient, 0, 1)
+    base_y = (ZONE_TOP + 0.0035) * h
+    scale = h / 760.0
+    wind = clamp(getattr(scene, "wind_speed", 0.0) / 26.0, 0.0, 1.0)
+    # 绿：白天是叶子的绿，夜里退成很暗的青灰
+    day_green = mix_rgb((0.15, 0.32, 0.16), tuple(c / 255 for c in light.horizon), 0.12)
+    night_green = mix_rgb((0.045, 0.055, 0.065),
+                          tuple(c / 255 for c in light.glow), 0.12)
+    green = mix_rgb(night_green, day_green, clamp((light.sun_alt + 3.0) / 14.0, 0, 1))
+    green = shade(green, 0.55 + 0.45 * amb)
+    sun_side = light.sun_side
+    for fx, size, seed in trees:
+        x = fx * w
+        sway = math.sin(t * 0.55 + seed * 0.017) * wind * 1.6 * scale
+        th = 40.0 * scale * size          # 整棵树的高度
+        trunk_w = max(1.0, th * 0.10)
+        cr.save()
+        # 影子：和人和车用同一束光（太阳低就长、阴天就没有）
+        _ground_shadow(cr, x + sway * 0.4, base_y + th * 0.02,
+                       th * 0.34, th * 0.10, light, 0.7)
+        _cast_shadow(cr, x, base_y, light, th * 0.9, th * 0.5, 0.5)
+        # 树干
+        trunk = shade(mix_rgb((0.22, 0.18, 0.15), green, 0.25),
+                      0.55 + 0.55 * amb)
+        cr.set_source_rgba(trunk[0], trunk[1], trunk[2], 0.96)
+        cr.new_path()
+        cr.move_to(x - trunk_w / 2, base_y)
+        cr.line_to(x - trunk_w * 0.28 + sway * 0.5, base_y - th * 0.62)
+        cr.line_to(x + trunk_w * 0.28 + sway * 0.5, base_y - th * 0.62)
+        cr.line_to(x + trunk_w / 2, base_y)
+        cr.close_path()
+        cr.fill()
+        # 树冠：几团叠出来的圆脑袋（先暗后亮，太阳那一侧更亮）
+        cx = x + sway
+        cy = base_y - th * 0.70
+        rw = th * 0.46
+        rh = th * 0.34
+        back = shade(green, 0.74)
+        front = shade(green, 1.12)
+        blobs = ((-0.46, -0.04, 0.56), (0.44, -0.02, 0.54), (0.02, -0.44, 0.60),
+                 (-0.24, 0.26, 0.58), (0.26, 0.22, 0.56), (0.0, 0.02, 0.82))
+        # 树冠下缘压暗一点，圆脑袋才有体积
+        shade_under = shade(green, 0.62)
+        for bx, by, br in blobs:
+            r = rw * br
+            if by > 0.24:
+                col = back
+            elif bx * (1 if sun_side >= 0 else -1) > 0:
+                col = front
+            else:
+                col = back
+            cr.set_source_rgba(col[0], col[1], col[2], 0.97)
+            cr.save()
+            cr.translate(cx + bx * rw, cy + by * rh)
+            cr.scale(1.0, max(0.55, rh / rw))
+            cr.arc(0, 0, r, 0, TAU)
+            cr.fill()
+            cr.restore()
+        # 树冠底部：一条暗（树荫的味道）
+        cr.set_source_rgba(shade_under[0], shade_under[1], shade_under[2], 0.6)
+        cr.save()
+        cr.translate(cx, cy + rh * 0.42)
+        cr.scale(1.0, 0.5)
+        cr.arc(0, 0, rw * 0.72, 0, TAU)
+        cr.fill()
+        cr.restore()
+        # 阳光下树冠上缘的一点亮边（只一点点，不然整棵树会浮起来）
+        if light.direct > 0.05 and amb > 0.25:
+            hl = cairo.RadialGradient(cx, cy - rh * 0.5, 0, cx, cy - rh * 0.4,
+                                      rw * 1.15)
+            wc = light.warm
+            hl.add_color_stop_rgba(0, wc[0], wc[1], wc[2],
+                                   0.075 * light.direct * (1.0 - 0.5 * amb))
+            hl.add_color_stop_rgba(1, wc[0], wc[1], wc[2], 0)
+            cr.set_source(hl)
+            cr.save()
+            cr.translate(cx, cy)
+            cr.scale(1.0, max(0.5, rh / rw))
+            cr.arc(0, 0, rw * 1.05, 0, TAU)
+            cr.fill()
+            cr.restore()
+        cr.restore()
+
 
 def _lamps(cr, w, h, scene, light, lamps) -> None:
     if not lamps:
@@ -594,7 +818,7 @@ def _car(cr, x, y, s, w, a: Actor, vis, scene, light, rain) -> None:
                   (0.36 + 0.70 * amb) * (0.9 + 0.2 * a.tone))
     paint = tuple(clamp(c, 0, 1) for c in paint)
     tyre = shade(paint, 0.07)
-    ra = r * 1.18
+    ra = r * 1.10
     rocker = y - r * 0.60
 
     _ground_shadow(cr, x + dirn * ln * 0.03, y + max(0.5, s * 0.5),
@@ -609,11 +833,18 @@ def _car(cr, x, y, s, w, a: Actor, vis, scene, light, rain) -> None:
         cr.scale(-1.0, 1.0)
         cr.translate(-x, 0)
 
-    # 1. 轮拱的暗腔 + 轮胎 + 轮毂
+    # 1. 轮拱里那点暗 + 轮胎 + 轮毂
+    #    暗腔只画在"车门槛线之上"——轮拱是车身挖出来的洞，它不该在地面附近露出
+    #    一整圈黑边（那会变成"车轮外面套了个黑圈"）。
+    cr.save()
+    cr.rectangle(-1e5, -1e5, 2e5, 1e5 + rocker)
+    cr.clip()
     for wx in (wx_r, wx_f):
-        cr.set_source_rgba(*shade(paint, 0.16), alpha)
+        cr.set_source_rgba(*shade(paint, 0.13), alpha)
         cr.arc(wx, y - r, ra, 0, TAU)
         cr.fill()
+    cr.restore()
+    for wx in (wx_r, wx_f):
         cr.set_source_rgba(tyre[0], tyre[1], tyre[2], alpha)
         cr.arc(wx, y - r, r, 0, TAU)
         cr.fill()
@@ -639,7 +870,11 @@ def _car(cr, x, y, s, w, a: Actor, vis, scene, light, rain) -> None:
     cr.fill_preserve()
     cr.set_source_rgba(*[c * 0.5 for c in paint], alpha * 0.85)
     cr.set_line_width(max(0.6, s * 0.8))
-    cr.stroke()
+    cr.stroke_preserve()
+    # 之后的车窗、车门缝都裁在车身里：车窗那一圈点算得再糙，也不会从车头/车顶
+    # 冒出去（以前 SUV 和轿车的玻璃会在横向错出去一块）
+    cr.save()
+    cr.clip()
 
     # 3. 车窗
     glass_top = y - hh * 0.95
@@ -671,6 +906,7 @@ def _car(cr, x, y, s, w, a: Actor, vis, scene, light, rain) -> None:
     cr.move_to(x + 0.02 * ln, y - hh * 0.30)
     cr.line_to(x + 0.02 * ln, y - hh * 0.88)
     cr.stroke()
+    cr.restore()
 
     # 4. 车灯
     lamp_y = y - hh * 0.42
@@ -702,14 +938,16 @@ def _car(cr, x, y, s, w, a: Actor, vis, scene, light, rain) -> None:
         cr.fill()
     else:
         cr.set_source_rgba(1.0, 0.96, 0.86, 0.60 * alpha)
-        cr.rectangle(x + 0.42 * ln, lamp_y - r * 0.30, 0.07 * ln, r * 0.60)
+        cr.rectangle(x + 0.435 * ln, lamp_y - r * 0.26, 0.055 * ln, r * 0.52)
         cr.fill()
         cr.set_source_rgba(0.85, 0.28, 0.24, 0.50 * alpha)
-        cr.rectangle(x - 0.49 * ln, lamp_y - r * 0.26, 0.05 * ln, r * 0.52)
+        cr.rectangle(x - 0.487 * ln, lamp_y - r * 0.22, 0.042 * ln, r * 0.44)
         cr.fill()
-    # 后视镜
-    cr.set_source_rgba(paint[0], paint[1], paint[2], alpha)
-    cr.rectangle(x + 0.16 * ln, y - hh * 0.76, 0.05 * ln, r * 0.35)
+    # 后视镜：贴在 A 柱下方、比车身暗一点，不然像贴在车顶的一小块纸
+    mirror = shade(paint, 0.72)
+    cr.set_source_rgba(mirror[0], mirror[1], mirror[2], alpha)
+    cr.rectangle(x + 0.15 * ln, y - hh * 0.70, max(1.0, 0.045 * ln),
+                 max(1.0, r * 0.30))
     cr.fill()
     # 雨天车尾的水雾
     if rain and scene.precip_strength > 0.3:
@@ -750,9 +988,13 @@ def _bus(cr, x, y, s, w, a: Actor, vis, scene, light) -> None:
         cr.scale(-1.0, 1.0)
         cr.translate(-x, 0)
     for wx in (wx_r, wx_f):
+        cr.save()
+        cr.rectangle(-1e5, -1e5, 2e5, 1e5 + rocker)      # 轮拱暗腔不出门槛线
+        cr.clip()
         cr.set_source_rgba(*shade(paint, 0.16), alpha)
         cr.arc(wx, y - r, ra, 0, TAU)
         cr.fill()
+        cr.restore()
         cr.set_source_rgba(*shade(paint, 0.08), alpha)
         cr.arc(wx, y - r, r, 0, TAU)
         cr.fill()
@@ -783,7 +1025,9 @@ def _bus(cr, x, y, s, w, a: Actor, vis, scene, light) -> None:
     cr.fill_preserve()
     cr.set_source_rgba(*[c * 0.5 for c in paint], alpha * 0.85)
     cr.set_line_width(max(0.6, s * 0.8))
-    cr.stroke()
+    cr.stroke_preserve()
+    cr.save()
+    cr.clip()
 
     wy0 = top + hh * 0.16
     wy1 = top + hh * 0.50
@@ -815,6 +1059,7 @@ def _bus(cr, x, y, s, w, a: Actor, vis, scene, light) -> None:
     for dx_ in (-0.06, 0.16):
         cr.rectangle(x + dx_ * ln, top + hh * 0.54, max(0.7, s * 0.8), hh * 0.40)
     cr.fill()
+    cr.restore()                    # 车窗结束：车灯的光晕要溢到车外，不裁
     if night_lights:
         cr.save()
         cr.set_operator(cairo.OPERATOR_ADD)
