@@ -26,6 +26,10 @@ make test                                   # 跑自动化测试（只用标准�
 改完之后至少跑一遍 `make check`（语法 + 测试 + 出一张图）。改天文或壁纸的话，
 `tests/` 里已经有对应的回归用例，加一条比在 issue 里描述现象有用得多。
 
+如果装了 `pyflakes`（`python3 -m pyflakes chuang/*.py tests/*.py`），提交前顺手跑一遍
+——它没进 CI（不想为一个小工具再拉一个依赖进来），但本地能挡住"import 了没用"
+这类噪音。
+
 ## 代码分层
 
 ```
@@ -37,10 +41,19 @@ chuang/render.py      Cairo 绘制（天空、云雨、剪影、街景、窗台�
 chuang/street.py      行人与车辆（位置 = 时间的函数）
 chuang/tray.py        托盘：KStatusNotifierItem + DBusMenu
 chuang/wallpaper.py   壁纸渲染线程与 GNOME 动态壁纸 XML
-chuang/app.py         GTK4 界面与生命周期
+chuang/wallpaper_ctl.py  桌面壁纸这一摊的调度（接管/跟随/动态/还原/诊断）
+chuang/update.py      检查更新（GitHub Releases，纯标准库）
+chuang/update_ui.py   下载 → 校验 → 安装 → 重启这条链路
+chuang/actions.py     菜单与动作注册（想加一个入口，就看这一个文件）
+chuang/dialogs.py     自绘的小窗口（换城市/跳到某一刻/详情/选择…）
+chuang/diagnostics.py 诊断文本（纯函数，没有 GTK 也能测）
+chuang/app.py         窗口本身：画面、交互、心跳、托盘与生命周期
+tests/                自动化测试（含 gui_smoke.py：开窗才测得到的那部分）
 ```
 
 想改画风，基本都在 `palette.py`（颜色关键帧）与 `render.py`；想改天象，在 `astronomy.py`。
+`app.py` 里只剩"窗口本身"——1.1.8 之前它有两千行、同时当菜单表、壁纸调度器、
+更新安装器与诊断器用；现在那些各自成文件，改动面小得多。
 
 ## 提交前的自检
 

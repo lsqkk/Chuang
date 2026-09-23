@@ -378,6 +378,40 @@ class UIState:
         self.hint_shown = False
 
 
+class CacheSlot:
+    """一张"按参数缓存"的离屏图：key + surface。
+
+    这个文件里有 5 张这样的图（天空底色、云、城市、暗角、窗台）。以前每处都
+    自己写一遍
+
+        if self._x_surf is None or self._x_key != key or 尺寸对不上:
+
+    ——而"手工拼 key"正是这里最容易出错的地方：漏一个参数，就会出现"换了城市/
+    换了天气，画面还是上一张"。1.1.8 修的那次（城市种子没进 key）就是这条路
+    的产物。把判断收进这个二十行的小类之后：**要加参数就往 key 里加**，
+    判断逻辑只有一处，换地方也不用再抄一遍。
+    """
+
+    __slots__ = ("key", "surf")
+
+    def __init__(self) -> None:
+        self.key = None
+        self.surf: cairo.ImageSurface | None = None
+
+    def stale(self, key, w: int, h: int) -> bool:
+        """该重画了吗？（没画过 / key 变了 / 尺寸变了）"""
+        return (self.surf is None or self.key != key
+                or self.surf.get_width() != int(w)
+                or self.surf.get_height() != int(h))
+
+    def store(self, key, surf: cairo.ImageSurface) -> cairo.ImageSurface:
+        self.key, self.surf = key, surf
+        return surf
+
+    def invalidate(self) -> None:
+        self.key, self.surf = None, None
+
+
 class SkyPainter:
     """把一帧场景画到 Cairo 上。"""
 
@@ -388,17 +422,12 @@ class SkyPainter:
         self._skyline: dict[int, tuple] = {}
         self._last = _time.time()
         self._lit_phase = 0.0
-        # 离屏缓存：云层、天空底色、暗角与玻璃反光
-        self._cloud_surf: cairo.ImageSurface | None = None
-        self._cloud_key = None
-        self._overlay_surf: cairo.ImageSurface | None = None
-        self._overlay_key = None
-        self._sky_surf: cairo.ImageSurface | None = None
-        self._sky_key = None
-        self._city_surf: cairo.ImageSurface | None = None
-        self._city_key = None
-        self._sill_surf: cairo.ImageSurface | None = None
-        self._sill_key = None
+        # 离屏缓存：云层、天空底色、城市、暗角与玻璃反光、窗台
+        self._sky = CacheSlot()
+        self._cloud = CacheSlot()
+        self._city = CacheSlot()
+        self._overlay = CacheSlot()
+        self._sill = CacheSlot()
         self._layout_cache: dict = {}
         self._street_roster: list | None = None
         self._street_trees: list | None = None
@@ -487,12 +516,9 @@ class SkyPainter:
         key = (int(w), int(h), round(scene.sun_alt * 3), round(scene.sun_az * 1.5),
                round((scene.cloud if scene.has_weather else 0) / 5),
                scene.fog, scene.mood.key)
-        if (self._sky_surf is None or self._sky_key != key
-                or self._sky_surf.get_width() != int(w)
-                or self._sky_surf.get_height() != int(h)):
-            self._sky_surf = self._render_sky(int(w), int(h), scene, glow_x, sun_y)
-            self._sky_key = key
-        cr.set_source_surface(self._sky_surf, 0, 0)
+        if self._sky.stale(key, w, h):
+            self._sky.store(key, self._render_sky(int(w), int(h), scene, glow_x, sun_y))
+        cr.set_source_surface(self._sky.surf, 0, 0)
         cr.paint()
 
     def _render_sky(self, w: int, h: int, scene: Scene, glow_x, sun_y):
@@ -734,12 +760,10 @@ class SkyPainter:
         s = 0.36
         lw = max(1, int(w * s))
         lh = max(1, int((HORIZON_Y * h + h * 0.06) * s))
-        if (self._cloud_surf is None or self._cloud_key != (int(w), int(h))
-                or self._cloud_surf.get_width() != lw
-                or self._cloud_surf.get_height() != lh):
-            self._cloud_surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, lw, lh)
-            self._cloud_key = (int(w), int(h))
-        surf = self._cloud_surf
+        if self._cloud.stale((int(w), int(h)), lw, lh):
+            self._cloud.store((int(w), int(h)),
+                              cairo.ImageSurface(cairo.FORMAT_ARGB32, lw, lh))
+        surf = self._cloud.surf
         lcr = cairo.Context(surf)
         lcr.set_operator(cairo.OPERATOR_SOURCE)
         lcr.set_source_rgba(0, 0, 0, 0)
@@ -841,11 +865,8 @@ class SkyPainter:
         换城市是低频操作，一次清干净最省心。
         """
         self._skyline.clear()
-        self._sky_surf = None
-        self._cloud_surf = None
-        self._city_surf = None
-        self._sill_surf = None
-        self._overlay_surf = None
+        for slot in (self._sky, self._cloud, self._city, self._sill, self._overlay):
+            slot.invalidate()
         self._layout_cache.clear()
 
     def _light(self, scene: Scene, az0: float, direct: float) -> _city.Light:
@@ -1031,15 +1052,11 @@ class SkyPainter:
                round(light.ambient * 60), round(light.direct * 60),
                round(light.night * 40), round(light.moon * 30),
                round(light.lit_frac * 60))
-        if (self._city_surf is None or self._city_key != key
-                or self._city_surf.get_width() != int(w)
-                or self._city_surf.get_height() != int(h)):
+        if self._city.stale(key, w, h):
             surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(w), int(h))
-            c2 = cairo.Context(surf)
-            _city.draw(c2, w, h, layers, light, horizon_y)
-            self._city_surf = surf
-            self._city_key = key
-        cr.set_source_surface(self._city_surf, 0, 0)
+            _city.draw(cairo.Context(surf), w, h, layers, light, horizon_y)
+            self._city.store(key, surf)
+        cr.set_source_surface(self._city.surf, 0, 0)
         cr.paint()
         # 雾：把远处的屋顶糊掉
         if scene.fog:
@@ -1056,10 +1073,9 @@ class SkyPainter:
     # ------------------------------------------------------------------
     def _draw_vignette(self, cr, w, h, scene: Scene):
         key = (int(w), int(h))
-        if self._overlay_surf is None or self._overlay_key != key:
-            self._overlay_surf = self._render_overlay(int(w), int(h))
-            self._overlay_key = key
-        cr.set_source_surface(self._overlay_surf, 0, 0)
+        if self._overlay.stale(key, w, h):
+            self._overlay.store(key, self._render_overlay(int(w), int(h)))
+        cr.set_source_surface(self._overlay.surf, 0, 0)
         cr.paint()
 
     def _render_overlay(self, w: int, h: int):
@@ -1112,17 +1128,14 @@ class SkyPainter:
         key = (int(w), int(h), int(hs), round(amb * 60), round(direct * 60),
                round(sun_x / 3.0), round(scene.sun_alt * 4),
                round(scene.sun_az * 4), round(fov))
-        if (self._sill_surf is not None and self._sill_key == key
-                and self._sill_surf.get_width() == int(w)
-                and self._sill_surf.get_height() == int(h)):
-            cr.set_source_surface(self._sill_surf, 0, 0)
+        if not self._sill.stale(key, w, h):
+            cr.set_source_surface(self._sill.surf, 0, 0)
             cr.paint()
             return
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(w), int(h))
         c2 = cairo.Context(surf)
         self._paint_sill(c2, w, h, scene, az0, fov, sun_x, direct, hs)
-        self._sill_surf = surf
-        self._sill_key = key
+        self._sill.store(key, surf)
         cr.set_source_surface(surf, 0, 0)
         cr.paint()
 

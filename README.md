@@ -271,7 +271,12 @@ make help                          # 常用任务
 | `street.py` | 行人与车辆（位置是时间的函数，因此在动态壁纸里也连贯） |
 | `tray.py` | 系统托盘（KStatusNotifierItem + DBusMenu，纯 Gio 实现） |
 | `wallpaper.py` | 壁纸渲染线程、GNOME 动态壁纸 XML、设置与还原 |
-| `app.py` | GTK4 界面、菜单、交互与生命周期 |
+| `wallpaper_ctl.py` | 「放到桌面上」这一摊：接管、跟随、动态壁纸、还原、诊断 |
+| `update.py` / `update_ui.py` | 检查更新（纯标准库）／下载、校验、安装、重启的界面 |
+| `actions.py` | 菜单长什么样、每个入口接到哪个动作——只有这一处定义 |
+| `dialogs.py` | 自己搭的几个小窗口（换城市、跳到某一刻、诊断详情…） |
+| `diagnostics.py` | 给 issue 用的环境信息与「壁纸诊断」文本（纯函数，好测） |
+| `app.py` | 窗口本身：画面、交互、心跳、托盘与生命周期 |
 
 改代码时有两个顺手的诊断口子：环境变量 `CHUANG_TIME`（假装时刻）与 `CHUANG_WEATHER`
 （假装天气），以及 `tools/snapshot.py`——不用开窗口就能把任意天气任意时刻画成 PNG。

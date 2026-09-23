@@ -12,8 +12,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 try:
-    from chuang import app as appmod          # 需要 gi / GTK4 / libadwaita
     from chuang import update as upmod
+    from chuang.update_ui import UpdateController   # 需要 gi / GTK4 / libadwaita
     IMPORT_ERROR = None
 except Exception as exc:                      # pragma: no cover - 看环境
     IMPORT_ERROR = exc
@@ -45,31 +45,31 @@ class TestVerifyDeb(unittest.TestCase):
                              sums_url=_file_url(sums) if sums else "")
 
     def test_accepts_matching_digest(self):
-        ok, why = appmod.ChuangWindow._verify_deb(None, self._release(self.sums), self.deb)
+        ok, why = UpdateController.verify_deb(None, self._release(self.sums), self.deb)
         self.assertTrue(ok, why)
         self.assertEqual(why, "")
 
     def test_rejects_tampered_package(self):
         self.deb.write_bytes(b"this stands for a TAMPERED .deb")
-        ok, why = appmod.ChuangWindow._verify_deb(None, self._release(self.sums), self.deb)
+        ok, why = UpdateController.verify_deb(None, self._release(self.sums), self.deb)
         self.assertFalse(ok)
         self.assertIn("校验不通过", why)
         self.assertIn(upmod.sha256_file(self.deb), why)      # 两个摘要都要摆出来
 
     def test_rejects_when_no_sums_asset(self):
-        ok, why = appmod.ChuangWindow._verify_deb(None, self._release(None), self.deb)
+        ok, why = UpdateController.verify_deb(None, self._release(None), self.deb)
         self.assertFalse(ok)
         self.assertIn("SHA256SUMS", why)
 
     def test_rejects_when_deb_not_listed(self):
         self.sums.write_text("0123456789abcdef0123456789abcdef0123456789abcdef"
                              "0123456789abcdef  something-else.deb\n", encoding="utf-8")
-        ok, why = appmod.ChuangWindow._verify_deb(None, self._release(self.sums), self.deb)
+        ok, why = UpdateController.verify_deb(None, self._release(self.sums), self.deb)
         self.assertFalse(ok)
         self.assertIn("没有", why)
 
     def test_unreachable_sums_is_a_refusal(self):
-        ok, why = appmod.ChuangWindow._verify_deb(
+        ok, why = UpdateController.verify_deb(
             None, self._release(Path(self.tmp.name) / "nope"), self.deb)
         self.assertFalse(ok)
         self.assertIn("失败", why)

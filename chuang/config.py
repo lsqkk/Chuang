@@ -25,6 +25,11 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 AUTOSTART_DIR = _xdg_dir("XDG_CONFIG_HOME", _HOME / ".config") / "autostart"
 AUTOSTART_FILE = AUTOSTART_DIR / "chuang.desktop"
 
+# 配置的"年代"。以后**删字段、改语义**时在这里加一档，并在 Config._migrate 里
+# 写清怎么把上一版的数据搬过来——否则旧文件只会被 sanitize() 悄悄纠成默认值，
+# 用户配好的东西看起来"自己变回去了"。
+SCHEMA = 1
+
 # 壁纸跟随此刻的可选间隔（秒）
 WALLPAPER_INTERVALS = (10, 30, 60)
 CLOSE_BEHAVIORS = ("ask", "tray", "quit")
@@ -55,6 +60,7 @@ class Location:
 
 @dataclass
 class Config:
+    schema: int = SCHEMA           # 写回文件里，便于以后识别"这是哪一版写的"
     location: Location = field(default_factory=Location)
     mirror_weather: bool = True
     always_on_top: bool = False
@@ -99,8 +105,27 @@ class Config:
         for key, value in raw.items():
             if key in cls.__dataclass_fields__:
                 setattr(cfg, key, value)
+        cfg._migrate()
         cfg.sanitize()
         return cfg
+
+    def _migrate(self) -> None:
+        """把旧版本的配置升到当前 schema。
+
+        现在只有第 1 版，所以只做"把版本号写对"这一件事；真正的迁移在
+        SCHEMA 往上加的时候写在这里（例如 1 → 2 时把某个字段换算过去，
+        然后把 self.schema 设成 2）。
+        """
+        try:
+            self.schema = int(self.schema)
+        except (TypeError, ValueError):
+            self.schema = SCHEMA
+        if self.schema < SCHEMA:
+            # 将来在这里按版本逐级升级
+            self.schema = SCHEMA
+        elif self.schema > SCHEMA:
+            # 文件比本程序还新（用户降级过）：不假装认识它，交给 sanitize 兜底
+            self.schema = SCHEMA
 
     def sanitize(self) -> None:
         """把外部改坏或过期的字段纠回合法值（配置是纯文本，用户和旧版本都会写它）。"""

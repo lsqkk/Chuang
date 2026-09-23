@@ -30,12 +30,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: 装绘制依赖（测试里的离屏渲染要 cairo + Pango + GTK4/libadwaita + 中文字体）
+      # 依赖清单与 .deb 的 Depends 保持一致（见 packaging/build-deb.sh）。
+      # 特别是 **python3-gi-cairo**：少了它 PangoCairo.create_layout() 会抛
+      # `KeyError: 'could not find foreign type Context'`——离屏出图全挂。
+      # 2026-09-23 的 v1.1.8 就是栽在这里：测试红了 → build/publish 被跳过 →
+      # Release 里什么都没有。别再把这一行删了。
+      - name: 装测试依赖（离屏渲染要 cairo/Pango/GTK4/libadwaita，GUI 冒烟要 Xvfb）
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3-gi python3-cairo gir1.2-gtk-4.0 gir1.2-adw-1 \
-            gir1.2-pango-1.0 fonts-noto-cjk
+            python3-gi python3-gi-cairo python3-cairo gir1.2-gtk-4.0 gir1.2-adw-1 \
+            gir1.2-pango-1.0 fonts-noto-cjk xvfb
 
       - name: 跑测试
         run: python3 -m unittest discover -s tests -t . -v

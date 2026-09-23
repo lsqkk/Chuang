@@ -66,6 +66,39 @@ class TestSanitize(unittest.TestCase):
         """1.1.8 加的字段：老配置里没有它，读出来必须是空串而不是崩。"""
         self.assertEqual(C.Config().prev_wallpaper_options, "")
 
+    def test_schema_is_written_and_migrated(self):
+        """老配置（没有 schema）读进来要升到当前版本，坏值也不能崩。"""
+        self.assertEqual(C.Config().schema, C.SCHEMA)
+        for bad in (None, "x", {}, 99.5):
+            cfg = C.Config(schema=bad)
+            cfg._migrate()
+            self.assertEqual(cfg.schema, C.SCHEMA)
+        # 真的从"没有 schema 键"的老文件读一遍
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.json"
+            path.write_text(json.dumps({"mirror_weather": False}), encoding="utf-8")
+            with mock.patch.object(C, "CONFIG_FILE", path):
+                cfg = C.Config.load()
+            self.assertEqual(cfg.schema, C.SCHEMA)
+            self.assertFalse(cfg.mirror_weather)
+
+    def test_save_includes_schema(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            with mock.patch.object(C, "CONFIG_DIR", root), \
+                    mock.patch.object(C, "CONFIG_FILE", root / "config.json"):
+                C.Config().save()
+                raw = json.loads((root / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(raw["schema"], C.SCHEMA)
+
     def test_location_label(self):
         loc = C.Location(name="西安", admin="陕西省", country="中国")
         self.assertEqual(loc.label, "西安 · 陕西省")

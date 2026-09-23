@@ -15,21 +15,44 @@ ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / "tools" / "snapshot.py"
 
 
-def _has_drawing_stack() -> bool:
+def _stack_status() -> tuple[bool, str]:
+    """返回 (能不能测, 不能测的原因)。
+
+    区分两种情况，别混成一句"跳过"：
+
+    * 机器上**根本没有** GTK/pycairo → 跳过（开发机可能就没装）；
+    * 有 gi 有 cairo、却少了 `python3-gi-cairo` 那块胶水 → **失败**。这时
+      `PangoCairo.create_layout()` 会抛 `KeyError: 'could not find foreign type
+      Context'`，所有离屏出图都会挂。2026-09-23 的 CI 就是漏了这个包：
+      测试红了 → 打包与发版被跳过 → Release 里什么都没有（见 CHANGELOG 1.1.8）。
+    """
     if importlib.util.find_spec("cairo") is None:
-        return False
+        return False, "没装 pycairo"
+    if importlib.util.find_spec("gi") is None:
+        return False, "没装 PyGObject"
     try:
+        import cairo
         import gi
         gi.require_version("Pango", "1.0")
         gi.require_version("PangoCairo", "1.0")
-        importlib.import_module("gi.repository.PangoCairo")   # 能导入才算数
-    except Exception:
-        return False
-    return True
+        from gi.repository import PangoCairo
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 8, 8)
+        PangoCairo.create_layout(cairo.Context(surface))
+    except Exception as exc:                      # 有 GTK 却画不了：要人管
+        return True, (f"有 gi/cairo 但离屏出图用不了（多半缺 python3-gi-cairo）："
+                      f"{type(exc).__name__}: {exc}")
+    return True, ""
 
 
-@unittest.skipUnless(_has_drawing_stack(), "没有 cairo / gi，跳过绘制冒烟测试")
+HAS_STACK, STACK_PROBLEM = _stack_status()
+
+
+@unittest.skipUnless(HAS_STACK, STACK_PROBLEM)
 class TestSnapshot(unittest.TestCase):
+
+    def test_cairo_glue_is_present(self):
+        """有 gi 有 cairo，就得能真的画出来。"""
+        self.assertEqual(STACK_PROBLEM, "", STACK_PROBLEM)
 
     def _render(self, args, name):
         out = Path(self.tmp.name) / name
@@ -73,7 +96,7 @@ class TestSnapshot(unittest.TestCase):
             surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, 400)
             scene = eng.build(when, None, location_label=name)
             painter.draw(cairo.Context(surf), 600, 400, scene, 180.0)
-            keys.append(painter._city_key)
+            keys.append(painter._city.key)
         self.assertNotEqual(keys[0], keys[1], "换了城市却没重画天际线")
         self.assertEqual(keys[0], keys[2], "同一座城市不该反复重画")
 
