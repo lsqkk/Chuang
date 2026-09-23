@@ -4,6 +4,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# 智能体/协作者的本机工作约定（含本机环境与口令获取方式，不要上传）
+AGENTS.md
+
 # 编辑器/系统杂物
 .DS_Store
 *.swp
