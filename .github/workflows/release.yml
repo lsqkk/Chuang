@@ -82,7 +82,7 @@ jobs:
             || { echo "::error::deb 是空的"; exit 1; }
 
       - name: 上传为工作流产物
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: chuang-deb
           path: |
@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: 取回刚打好的 .deb
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: chuang-deb
           path: packaging/out
