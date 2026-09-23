@@ -46,6 +46,28 @@ popover > contents { background: rgba(18, 22, 33, 0.97); }
 """
 
 
+def _other_chuang_processes() -> list:
+    """除了自己，系统里还有哪些「窗」进程（用于诊断"是不是有残留进程"）。"""
+    out = []
+    me = os.getpid()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == me:
+            continue
+        try:
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        argv = [a.decode("utf-8", "replace") for a in argv if a]
+        # 只看真正的启动命令（python3 /usr/bin/chuang、chuang-gui…），
+        # 别把 "gsettings set … sky-a.png" 这种子进程也算进来
+        if any(os.path.basename(a) in ("chuang", "chuang-gui") for a in argv[:2]):
+            out.append((pid, " ".join(argv[:3])))
+    return out
+
+
 def escape_closes(window: Gtk.Window) -> None:
     """按 Esc 关掉这个对话框（GTK4 的裸窗口默认不认 Esc）。"""
     keys = Gtk.EventControllerKey()
@@ -413,6 +435,11 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._really_quit = False
         self._installing = False
         self._wallpaper_set_by_us = False   # 本进程有没有成功把壁纸换成我们的
+        self._tick_errors = 0               # 心跳里兜住的异常次数
+        self._last_tick_error = ""
+        self._last_wallpaper_at = 0.0
+        self._last_wallpaper_ok = None
+        self._last_wallpaper_msg = ""
         self._toggle_handlers = {}          # 勾选项名字 → 真正的处理器（便于"设为"某状态）
         self._pin_ok = self._init_pin()
         # 调试钩子：CHUANG_TIME=2026-09-23T18:40 / CHUANG_WEATHER=63:95:9:180
@@ -663,6 +690,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         w3.append("壁纸上显示「此刻的事实」", "win.wallpaperinfo")
         w3.append("壁纸上显示「今日天色」长卷", "win.wallpaperribbon")
         w3.append("还原成原来的壁纸", "win.wallpaperrestore")
+        w3.append("壁纸诊断（时间不对时点这里）…", "win.wallpaperdiag")
         wall.append_section(None, w3)
         menu.append_submenu("桌面壁纸", wall)
 
@@ -759,6 +787,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         add("wallpaper", self._act_wallpaper)
         add("wallpaperday", self._act_wallpaper_day)
         add("wallpaperrestore", self._act_wallpaper_restore)
+        add("wallpaperdiag", self._act_wallpaper_diag)
         add("show", self._act_show)
         add("checkupdate", self._act_check_update)
         add("openreleases", self._act_open_releases)
@@ -913,6 +942,9 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.config.wallpaper_slot = slot
         self.config.save()          # 记下槽位，只在"桌面挂着别人的图"时当兜底
         self._wallpaper_set_by_us = bool(ok)
+        self._last_wallpaper_at = _time.time()
+        self._last_wallpaper_ok = bool(ok)
+        self._last_wallpaper_msg = msg
         # 自动跟随不弹提示，否则提示会一直挂在屏幕上
         if not quiet or not ok:
             self.toast(msg, 4.5 if ok else 6.0)
@@ -1007,6 +1039,60 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.config.prev_wallpaper_dark = ""
             self.config.save()
         self.toast(msg, 5.0)
+
+    def _act_wallpaper_diag(self, *_):
+        """把"壁纸/时间到底怎么了"摊开成一段可复制的文字。
+
+        这类毛病是"有时候"发生的，光靠转述很难查；发生的那一刻点一下这里，
+        把内容贴出来就够了。
+        """
+        self._show_detail("壁纸诊断（可以整段复制）", self._diagnostics_wallpaper())
+
+    def _diagnostics_wallpaper(self) -> str:
+        import time as _t
+        lines = [f"窗 · Chuang {__version__} 壁纸诊断",
+                 _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime()), "─" * 34]
+        others = _other_chuang_processes()
+        lines.append(f"本进程 pid={os.getpid()}，单实例锁："
+                     f"{'持有' if globals().get('_INSTANCE_HANDLE') else '未持有'}")
+        lines.append(f"系统里其它「窗」进程：{len(others)} 个"
+                     + ("（" + "; ".join(f"{p}: {c}" for p, c in others) + "）" if others else ""))
+        lines.append(f"代码版本 {__version__}；dpkg 里装的是 "
+                     f"{upmod.installed_deb_version() or '（不是 .deb 安装）'}")
+        lines.append(f"壁纸跟随：{'开' if self.config.wallpaper_auto else '关'}"
+                     f"（间隔 {self.config.wallpaper_interval} 秒）；"
+                     f"托盘：{'可用' if (self.tray and self.tray.available) else '不可用'}")
+        lines.append("")
+
+        shown = wallmod.shown_uri()
+        shown_slot = wallmod.shown_slot()
+        mtimes = wallmod.slot_mtimes()
+        now = _t.time()
+        if shown_slot < 0:
+            lines.append(f"桌面此刻挂的不是「窗」画的图：{shown or '（读不到）'}")
+        else:
+            lines.append(f"桌面此刻挂的是：{wallmod.SLOTS[shown_slot].name}"
+                         f"（{now - mtimes[shown_slot]:.1f} 秒前写的）")
+            other = 1 - shown_slot
+            lines.append(f"另一张 {wallmod.SLOTS[other].name}："
+                         f"{now - mtimes[other]:.1f} 秒前写的")
+            stale = wallmod.stale_shown_slot()
+            lines.append("桌面显示的是不是最新那张："
+                         + ("**不是**（应该顶上 " + wallmod.SLOTS[stale].name + "）"
+                            if stale is not None else "是"))
+        lines.append("")
+        if self._last_wallpaper_at:
+            ago = _t.time() - self._last_wallpaper_at
+            lines.append(f"最近一次换图：{ago:.0f} 秒前 → "
+                         f"{'成功' if self._last_wallpaper_ok else '失败'}（{self._last_wallpaper_msg}）")
+        else:
+            lines.append("最近一次换图：本次启动以来还没有过")
+        lines.append(f"心跳：本进程共兜住 {self._tick_errors} 次异常"
+                     + (f"；最近一次：{self._last_tick_error}" if self._last_tick_error else ""))
+        lines.append("")
+        lines.append("（如果上面写着「桌面显示的不是最新那张」，那就是桌面没接受新图；"
+                     "如果「最近一次换图」停在很久以前，说明心跳停了。）")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 检查更新
@@ -1530,6 +1616,24 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.painter.draw_chip(cr, w, h)
 
     def _tick(self):
+        """定时心跳：重绘、刷新标题与壁纸、兜底自查。
+
+        整个函数必须包在 try 里。PyGObject 里超时回调一旦抛异常，GLib 会
+        **把这个定时器整个移除**——窗口和壁纸就永远停在那一刻（进程还在、
+        托盘还在、菜单还能点，就是时间不再走）。这种"偶发一次就永久定格"
+        正是"有时候左上角时间不对"最难查的来源，所以宁可吞掉异常也要活着。
+        """
+        try:
+            return self._tick_body()
+        except Exception as exc:                 # noqa: BLE001 - 就是要兜住一切
+            import traceback
+            self._last_tick_error = f"{type(exc).__name__}: {exc}"
+            if self._tick_errors < 3:            # 只往日志里写前几次，别刷屏
+                traceback.print_exc()
+            self._tick_errors += 1
+            return True
+
+    def _tick_body(self) -> bool:
         import time as _t
         now = _t.monotonic()
         clock = self._now()

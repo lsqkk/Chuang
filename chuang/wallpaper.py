@@ -90,18 +90,25 @@ def current_uris() -> tuple[str, str]:
         return "", ""
     out = []
     for key in ("picture-uri", "picture-uri-dark"):
-        r = subprocess.run([gsettings, "get", "org.gnome.desktop.background", key],
-                           capture_output=True, text=True)
-        out.append(r.stdout.strip().strip("'") if r.returncode == 0 else "")
+        rc, data = _gsettings("get", "org.gnome.desktop.background", key)
+        out.append(data.strip().strip("'") if rc == 0 else "")
     return out[0], out[1]
 
 
 def _gsettings(*args) -> tuple[int, str]:
-    """跑一次 gsettings，返回 (返回码, stdout)。"""
+    """跑一次 gsettings，返回 (返回码, stdout)。
+
+    **一定要带超时**：dconf 偶尔会卡住（会话总线忙、服务刚重启），没超时的
+    subprocess.run 会把 GTK 主循环一起拖死——窗口不响应、壁纸也就停在那一刻。
+    """
     gsettings = shutil.which("gsettings")
     if not gsettings:
         return 1, ""
-    r = subprocess.run([gsettings, *args], capture_output=True, text=True)
+    try:
+        r = subprocess.run([gsettings, *args], capture_output=True, text=True,
+                           timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
     return r.returncode, (r.stdout or "").strip()
 
 
@@ -157,16 +164,23 @@ def apply_uri(uri: str) -> tuple[bool, str]:
             tried.append(schema)
 
     if "mate" in desktop and shutil.which("gsettings"):
-        subprocess.run(["gsettings", "set", "org.mate.background",
-                        "picture-filename", uri.replace("file://", "")],
-                       capture_output=True)
+        try:
+            subprocess.run(["gsettings", "set", "org.mate.background",
+                            "picture-filename", uri.replace("file://", "")],
+                           capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
         return True, "已设为桌面壁纸"
 
     plasma = shutil.which("plasma-apply-wallpaperimage")
     if plasma:
-        r = subprocess.run([plasma, uri.replace("file://", "")],
-                           capture_output=True, text=True)
-        if r.returncode == 0:
+        try:
+            r = subprocess.run([plasma, uri.replace("file://", "")],
+                               capture_output=True, text=True, timeout=15)
+            rc = r.returncode
+        except (OSError, subprocess.SubprocessError):
+            rc = 1
+        if rc == 0:
             return True, "已设为桌面壁纸"
         tried.append("plasma")
 
@@ -234,10 +248,9 @@ def restore(light: str, dark: str) -> tuple[bool, str]:
         return False, "没有记录到你原来的壁纸"
     ok, msg = apply_uri(light)
     if ok and dark and dark != light:
-        gsettings = shutil.which("gsettings")
-        if gsettings:
-            subprocess.run([gsettings, "set", "org.gnome.desktop.background",
-                            "picture-uri-dark", dark], capture_output=True)
+        if shutil.which("gsettings"):
+            _gsettings("set", "org.gnome.desktop.background",
+                       "picture-uri-dark", dark)
     return ok, "已还原成你原来的壁纸" if ok else msg
 
 
