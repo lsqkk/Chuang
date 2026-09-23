@@ -28,6 +28,9 @@ from .weather import WeatherService, geocode
 
 # 默认的壁纸跟随间隔（秒）；用户可在菜单里改成 30 秒 / 1 分钟
 WALLPAPER_INTERVAL = 10
+# 每隔这么久做一次"换名字接管"（常态是就地更新正在显示的那张文件；
+# 偶尔真的换一次 URI，兜底那种"shell 的监听链路断了"的极端情况）
+FLIP_EVERY = 300.0
 # 单实例锁：同一时刻只允许一个「窗」在写壁纸，避免两个进程互相覆盖
 INSTANCE_LOCK = Path.home() / ".cache" / "chuang" / "instance.lock"
 
@@ -440,6 +443,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._last_wallpaper_at = 0.0
         self._last_wallpaper_ok = None
         self._last_wallpaper_msg = ""
+        self._last_flip_at = _time.time()   # 上次真正换过壁纸 URI 的时刻
         self._toggle_handlers = {}          # 勾选项名字 → 真正的处理器（便于"设为"某状态）
         self._pin_ok = self._init_pin()
         # 调试钩子：CHUANG_TIME=2026-09-23T18:40 / CHUANG_WEATHER=63:95:9:180
@@ -928,13 +932,26 @@ class ChuangWindow(Adw.ApplicationWindow):
         size = wallmod.screen_size()
         loc = self.config.location
         self.wp.location(loc.lat, loc.lon, loc.timezone, loc.label)
-        # 槽位由"桌面此刻真正显示的是哪一张"决定：这样这次一定写另一张，
-        # URI 真的变了 GNOME 才会重新读文件。只信配置里的 slot 会在进程被
-        # 杀、两个写入方并存等情况下错位，于是来回闪两张（其中一张还是旧的）。
-        slot, _ = wallmod.next_slot(wallmod.shown_uri(), self.config.wallpaper_slot)
+        # 写哪一张？**写桌面此刻正在显示的那一张**。
+        #
+        # gnome-shell 把壁纸的解码结果按文件缓存，而且只监听"当前显示的那个
+        # 文件"：它有变化才会 purge + 重读。反过来，如果我们写的是另一张、
+        # 再把 URI 切过去，shell 会拿"这张文件上一次的解码结果"直接显示——
+        # 桌面上就会出现这个文件**上一版/上几版**的画面（时间也就是旧的）。
+        # 所以常态是就地更新；只有"接管"或偶尔兜底时才真的换一次文件名。
+        shown = wallmod.shown_slot()
+        due_flip = (_time.time() - self._last_flip_at) > FLIP_EVERY
+        if shown >= 0 and not due_flip:
+            slot, adopt = shown, False
+        else:
+            other = 1 - (self.config.wallpaper_slot % 2)
+            slot = (1 - shown) if shown >= 0 else other
+            adopt = True
+            self._last_flip_at = _time.time()
         self.wp.render_now(self.engine.local_now(), self.weather.weather,
                            show_info, show_ribbon, size, slot,
-                           lambda ok, msg, slot: self._wallpaper_done(ok, msg, slot, quiet))
+                           lambda ok, msg, slot: self._wallpaper_done(ok, msg, slot, quiet),
+                           adopt=adopt)
         if not quiet:
             self.toast("正在把这扇窗挂到桌面上…", 2.0)
 
@@ -1087,6 +1104,8 @@ class ChuangWindow(Adw.ApplicationWindow):
                          f"{'成功' if self._last_wallpaper_ok else '失败'}（{self._last_wallpaper_msg}）")
         else:
             lines.append("最近一次换图：本次启动以来还没有过")
+        lines.append(f"上次真正换过文件名（URI）：{_t.time() - self._last_flip_at:.0f} 秒前"
+                     f"（常态是就地更新正在显示的那张，每 {int(FLIP_EVERY)} 秒兜底换一次）")
         lines.append(f"心跳：本进程共兜住 {self._tick_errors} 次异常"
                      + (f"；最近一次：{self._last_tick_error}" if self._last_tick_error else ""))
         lines.append("")
@@ -1680,7 +1699,9 @@ class ChuangWindow(Adw.ApplicationWindow):
             else:
                 stale = wallmod.stale_shown_slot()
                 if stale is not None:
-                    wallmod.set_wallpaper(wallmod.SLOTS[stale])
+                    ok, _ = wallmod.set_wallpaper(wallmod.SLOTS[stale])
+                    if ok:
+                        wallmod.touch(wallmod.SLOTS[stale])   # 逼 shell 丢掉旧解码
                     self._next_wallpaper = 0.0    # 顺手重画一张最新的
         # 画面只在窗口可见时重绘；有降水画得勤一点，安静时省电
         if self.get_visible():

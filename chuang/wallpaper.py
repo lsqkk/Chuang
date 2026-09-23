@@ -79,6 +79,20 @@ def render(path: Path, painter, scene, az0: float, size: tuple[int, int]) -> Pat
     return path
 
 
+def touch(path: Path) -> None:
+    """只改一下 mtime（内容不动）。
+
+    gnome-shell 把解码好的壁纸按**文件**缓存（Meta.BackgroundImageCache），
+    而且只监听"当前正在显示的那个文件"：只有它收到"这个文件变了"才会
+    purge 掉缓存并重读。碰一下 mtime 就是给它的第二次提醒——换过 URI
+    之后补这一下，桌面才会显示新内容而不是这个文件上一版的解码结果。
+    """
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
 # --------------------------------------------------------------------------
 # 与桌面环境打交道
 # --------------------------------------------------------------------------
@@ -305,8 +319,16 @@ class Worker:
         return 180.0 if self.lat >= 0 else 0.0
 
     def render_now(self, when: datetime, weather, show_info: bool, show_ribbon: bool,
-                   size: tuple[int, int], slot: int, done) -> None:
-        """渲染"此刻"的一张壁纸。done(ok, message, slot) 在主线程被调用。"""
+                   size: tuple[int, int], slot: int, done,
+                   adopt: bool = False) -> None:
+        """渲染"此刻"的一张壁纸。done(ok, message, slot) 在主线程被调用。
+
+        adopt=False（常态）：**就地更新桌面正在显示的那个文件**。gnome-shell
+        对它有文件监听，内容一变就丢掉解码缓存重读，画面直接换上新的。
+        adopt=True（接管 / 每几分钟兜底一次）：写另一张再把壁纸 URI 切过去，
+        切换后要连碰两次 mtime —— 刚切过去的那张，shell 很可能先拿出它**上一次**
+        的解码结果（这就是"显示的是这个文件上一版"的来源）。
+        """
         if not self._lock.acquire(blocking=False):
             return
         self._busy = True
@@ -326,7 +348,16 @@ class Worker:
                 # 注意：不能在这里给 slot 赋值，否则它就成了局部变量（闭包捕获不到）
                 path = SLOTS[slot]
                 render(path, self.painter, scene, self._az0(), size)
-                ok, msg = set_wallpaper(path)
+                if adopt:
+                    ok, msg = set_wallpaper(path)
+                    if ok:
+                        for delay in (0.20, 0.70):
+                            time.sleep(delay)
+                            touch(path)
+                else:
+                    ok, msg = True, "桌面壁纸已更新"
+                    time.sleep(0.60)      # 等 shell 处理内容变化，再补一次提醒
+                    touch(path)
                 GLib.idle_add(done, ok, msg, slot)
             except Exception as exc:
                 GLib.idle_add(done, False, f"渲染壁纸失败：{exc}", slot)
@@ -380,22 +411,6 @@ class Worker:
                 self._lock.release()
 
         threading.Thread(target=work, daemon=True, name="chuang-wallpaper-day").start()
-
-
-def next_slot(current_uri: str, last_slot: int) -> tuple[int, Path]:
-    """下一个要写的槽位。
-
-    以"桌面此刻真正显示的是哪一张"为准：只有写到另一张，URI 才会真的变化，
-    GNOME 才会重新读文件。如果桌面挂的压根不是我们的图（用户自己换了壁纸、
-    或挂着动态壁纸 XML），就退回按上次用的槽位交替。
-    """
-    current = -1
-    for i in range(len(SLOTS)):
-        if current_uri == slot_uri(i):
-            current = i
-            break
-    index = (1 - current) if current >= 0 else (1 - (int(last_slot or 0) % 2))
-    return index, SLOTS[index]
 
 
 def set_wallpaper(path: Path) -> tuple[bool, str]:
