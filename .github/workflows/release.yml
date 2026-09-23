@@ -1,0 +1,37 @@
+name: Build .deb and attach to release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:        # 也可以在 Actions 页面手动跑，产物在 Artifacts 里
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 打包 .deb
+        env:
+          # 自动把 Homepage 指向本仓库；署名可按需改
+          PKG_HOMEPAGE: ${{ github.server_url }}/${{ github.repository }}
+          PKG_MAINTAINER: ${{ github.repository_owner }}
+        run: |
+          chmod +x packaging/build-deb.sh
+          ./packaging/build-deb.sh
+
+      - name: 上传为工作流产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: chuang-deb
+          path: packaging/out/*.deb
+
+      - name: 附加到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/out/*.deb
+          generate_release_notes: true

@@ -12,3 +12,13 @@ __pycache__/
 # 安装脚本的中间产物（如果有人在本地跑过）
 dist/
 build/
+
+# 打包产物：.deb 只用于发 Release，不进仓库
+*.deb
+*.dsc
+*.tar.xz
+packaging/build/
+packaging/out/
+
+# 本地跑出来的截图草稿（正式的截图在 screenshots/ 里）
+/shots/
