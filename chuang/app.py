@@ -17,6 +17,8 @@ from . import APP_ID, __version__
 from . import actions
 from . import config as cfgmod
 from . import diagnostics as diag
+from . import frames as framemod
+from . import infocard as factmod
 from . import tray as traymod
 from . import update as upmod
 from . import update_ui as upd
@@ -72,6 +74,15 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.set_default_size(self.config.window_w, self.config.window_h)
         self.set_size_request(360, 260)
         self.painter.clock = self._now       # 人车按实时时钟连续移动
+        # 画面偏好都记得住：以前用空格关掉信息卡，重启它又会自己回来
+        self.painter.ui.show_info = bool(self.config.show_info)
+        self.painter.ui.show_ribbon = bool(self.config.show_ribbon)
+        self.painter.ui.info_compact = bool(self.config.info_compact)
+        # 信息卡上那些能点的东西（命中、跳过去看、摊开数据）住在 infocard.py
+        self.info = factmod.InfoCard(self)
+        # 重绘交给帧时钟（见 frames.FrameDriver）：帧率上限由 config.frame_rate 决定，
+        # 菜单里可以按终端性能调（都得住在这儿，动作表里要引用它们）
+        self.frames = framemod.FrameDriver(self)
         loc = self.config.location
         # 壁纸那一摊（接管/跟随/动态壁纸/还原/诊断）都在 wallpaper_ctl 里，
         # 窗口这边只负责"什么时候叫它"：心跳、换城市、关窗。
@@ -96,9 +107,9 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.weather.set_location(self.config.location.lat, self.config.location.lon,
                                       self.config.location.timezone)
 
-        self._next_draw = 0.0
         self._last_clock = self._now()
         self._timer = GLib.timeout_add(25, self._tick)
+        self.frames.start()
         self.connect("close-request", self._on_close)
         if self.config.update_check:
             GLib.timeout_add(9000, self.updater.maybe_auto_check)
@@ -368,12 +379,17 @@ class ChuangWindow(Adw.ApplicationWindow):
         else:
             self.toast("只看天，不看天气")
 
-    def _act_info(self, want: bool):
-        self.painter.ui.show_info = want
+    def _act_ribbon(self, want: bool):
+        self.painter.ui.show_ribbon = want
+        self.config.show_ribbon = want
+        self.config.save()
         self.area.queue_draw()
+        self.toast("今日淡淡的长卷回来了" if want
+                   else "收起长卷，窗外只剩景色", 2.4)
 
     def _act_city(self, *_):
-        CityDialog(self, self._set_location, self.toast).present()
+        CityDialog(self, self._set_location, self.toast,
+                   current=self.config.location).present()
 
     # ------------------------------------------------------------------
     # 桌面壁纸
@@ -602,10 +618,6 @@ class ChuangWindow(Adw.ApplicationWindow):
         TimeTravelDialog(self, when, self.engine._tzinfo,
                          self._set_preview, lambda: self._set_preview(None)).present()
 
-    def _has_precip(self) -> bool:
-        sc = self._scene
-        return bool(sc is not None and sc.precip_kind != "none" and sc.precip_strength > 0)
-
     def _current_scene(self):
         ui = self.painter.ui
         now = self._now()
@@ -635,6 +647,9 @@ class ChuangWindow(Adw.ApplicationWindow):
             return
         self._ribbon_key = key
         self.painter.ui.ribbon = self.engine.ribbon(day, weather)
+        # 悬停长卷时冒出来的那句话：这一刻的天气（没联网就留空，只显示时刻）
+        self.painter.ui.ribbon_info = self.info.ribbon_notes(self.painter.ui.ribbon,
+                                                             weather)
         self.painter.ui.ribbon_key = key
         self.painter.ui.ribbon_surface = None
 
@@ -694,14 +709,7 @@ class ChuangWindow(Adw.ApplicationWindow):
                 pass
             self.weather.maybe_refresh()
         self.wallpaper.tick(now)
-        # 画面只在窗口可见时重绘；有降水画得勤一点，安静时省电
-        if self.get_visible():
-            interval = 0.07 if self._has_precip() else 0.10
-            if not self.is_active():
-                interval *= 5
-            if now >= self._next_draw:
-                self._next_draw = now + interval
-                self.area.queue_draw()
+        self.frames.watchdog(now)             # 帧时钟万一没在走，兜底补一次重绘
         return True
 
     # ------------------------------------------------------------------
@@ -720,23 +728,48 @@ class ChuangWindow(Adw.ApplicationWindow):
             if t is not None:
                 self._set_preview(t)
             return
+        changed = False
+        idx = self.info.hit(x, y)
+        if idx != ui.info_hover:
+            ui.info_hover = idx
+            changed = True
+        arc_dt = (self.info.arc_time(x)
+                  if 0 <= idx < len(ui.info_rects) and ui.info_rects[idx][4] == "arc"
+                  else None)
+        if arc_dt != ui.info_hover_dt:
+            ui.info_hover_dt = arc_dt
+            changed = True
         over = self._over_ribbon(x, y)
-        self.area.set_cursor_from_name("ew-resize" if over else None)
+        self.area.set_cursor_from_name(
+            "pointer" if idx >= 0 else ("ew-resize" if over else None))
         t = self.painter.ribbon_time_at(ui, x) if over else None
         if t != ui.hover_dt:
             ui.hover_dt = t
+            changed = True
+        if changed:
             self.area.queue_draw()
 
     def _on_leave(self, *_):
-        self.painter.ui.hover_dt = None
+        ui = self.painter.ui
+        ui.hover_dt = None
+        ui.info_hover = -1
+        ui.info_hover_dt = None
         self.area.queue_draw()
 
     def _on_press(self, gesture, _n, x, y):
         ui = self.painter.ui
         tx, ty, tw, th = ui.toast_rect
-        if (ui.toast_detail and tw > 0
-                and tx <= x <= tx + tw and ty <= y <= ty + th):
-            self._show_detail("详情", ui.toast_detail)
+        if tw > 0 and tx <= x <= tx + tw and ty <= y <= ty + th:
+            if ui.toast_detail:
+                self._show_detail("详情", ui.toast_detail)
+            else:                       # 点一下就把这条提示收掉
+                ui.toast_until = 0.0
+                self.area.queue_draw()
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            return
+        idx = self.info.hit(x, y)
+        if idx >= 0:
+            self.info.activate(idx, x)
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             return
         cx, cy, cw, ch = ui.chip_rect
@@ -772,10 +805,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         顺带把菜单（与托盘）里那一项「显示此刻的事实」的勾同步上——
         不然用空格关掉卡片之后，菜单里那个勾还挂着。
         """
-        want = not self.painter.ui.show_info
-        self.set_toggle("info", want)
-        self.painter.ui.show_info = want
-        self.area.queue_draw()
+        # 和菜单里那一项是同一个处理（infocard.InfoCard.act_show）
+        self.set_toggle("info", not self.painter.ui.show_info)
         return True
 
     def _key_escape(self):
@@ -803,6 +834,12 @@ class ChuangWindow(Adw.ApplicationWindow):
         name = Gdk.keyval_name(keyval)
         if name == "space":
             return self._key_info()
+        if name in ("c", "C"):
+            self.set_toggle("info_compact", not self.config.info_compact)
+            return True
+        if name in ("r", "R"):
+            self.info.refresh_weather()
+            return True
         if name == "Escape":
             return self._key_escape()
         if name in ("Home", "KP_Home"):
@@ -817,15 +854,19 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._ribbon_key = None
         self.area.queue_draw()
 
-    def toast(self, text: str, seconds: float = 3.0):
+    def toast(self, text: str, seconds: float = 3.0, icon: str = "info"):
+        """屏幕下方那条一句话提示。点一下可以把它收掉（带详情的点开看）。"""
         self.painter.ui.toast = text
+        self.painter.ui.toast_icon = icon
         self.painter.ui.toast_until = _time.time() + seconds
         self.painter.ui.toast_detail = ""
         self.area.queue_draw()
 
-    def toast_detailed(self, text: str, seconds: float, detail: str):
+    def toast_detailed(self, text: str, seconds: float, detail: str,
+                       icon: str = "warn"):
         """短提示 + 可复制的完整内容：点一下提示条就打开详情窗。"""
         self.painter.ui.toast = text
+        self.painter.ui.toast_icon = icon
         self.painter.ui.toast_until = _time.time() + seconds
         self.painter.ui.toast_detail = detail
         self.area.queue_draw()
@@ -847,7 +888,8 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.toast(f"先按你的时区猜了「{self.config.location.name}」"
                        f"，不对的话：菜单 → 换一扇窗", 9.0)
         else:
-            self.toast("空格 隐藏信息 · 拖动底部长卷可以预览今天的天色", 7.0)
+            self.toast("空格 隐藏信息卡 · 点上面的日出/日落可以跳过去看 · "
+                       "拖底部长卷预览今天的天色", 9.0)
         self.config.save()
 
     def _on_close(self, *_):

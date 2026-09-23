@@ -33,6 +33,10 @@ SCHEMA = 1
 # 壁纸跟随此刻的可选间隔（秒）
 WALLPAPER_INTERVALS = (10, 30, 60)
 CLOSE_BEHAVIORS = ("ask", "tray", "quit")
+# 画面刷新率（帧/秒）。默认 60，允许按终端性能往下调：
+# 24 近似电影、30 省电、45 折中、60 顺滑、120 高刷屏（屏幕跟不上时会自动以屏幕为准）。
+FRAME_RATES = (24, 30, 45, 60, 120)
+DEFAULT_FRAME_RATE = 60
 
 
 @dataclass
@@ -82,7 +86,10 @@ class Config:
     fov: float = 190.0
     window_w: int = 960
     window_h: int = 620
+    show_info: bool = True               # 显示「此刻的事实」（空格）
+    info_compact: bool = False           # 信息卡精简模式（只留时间与那句话）
     show_ribbon: bool = True
+    frame_rate: int = DEFAULT_FRAME_RATE  # 画面刷新率（帧/秒），见 FRAME_RATES
     first_run_done: bool = False
 
     # ---- 读写 --------------------------------------------------------
@@ -144,8 +151,15 @@ class Config:
         for name in ("wallpaper_auto", "wallpaper_dynamic", "mirror_weather",
                      "autostart", "autostart_hidden", "update_check",
                      "always_on_top", "show_ribbon", "wallpaper_show_info",
-                     "wallpaper_show_ribbon", "first_run_done"):
+                     "wallpaper_show_ribbon", "show_info", "info_compact",
+                     "first_run_done"):
             setattr(self, name, bool(getattr(self, name, False)))
+        try:
+            self.frame_rate = int(self.frame_rate)
+        except (TypeError, ValueError):
+            self.frame_rate = DEFAULT_FRAME_RATE
+        if self.frame_rate not in FRAME_RATES:
+            self.frame_rate = DEFAULT_FRAME_RATE
         try:
             self.fov = min(360.0, max(60.0, float(self.fov)))
         except (TypeError, ValueError):

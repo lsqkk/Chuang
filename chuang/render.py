@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import random
 import time as _time
+from dataclasses import dataclass
+from datetime import datetime
 
 import cairo
 import gi
@@ -132,6 +134,203 @@ def wrap_cjk(text: str, per_line: int) -> list[str]:
     if cur:
         lines.append(cur)
     return lines
+
+
+# --------------------------------------------------------------------------
+# 矢量小图标
+# --------------------------------------------------------------------------
+#
+# 「此刻的事实」里每一行前面那枚图标，是拿 Cairo 几笔画出来的——不引图片、
+# 不引图标字体、不加依赖，和整幅画一个路子（见 DESIGN.md）。所以它跟着
+# 卡片缩放不会糊，也不必往仓库里塞素材。
+#
+# 约定：图标画在以 (cx, cy) 为心、直径 size 的方框里；颜色是 0-255 三元组。
+# moon 额外吃一个 phase（0 新月 / 0.5 满月 / 1 又回到新月），画出来的亮面
+# 朝向与窗外那轮月亮一致——这里也不许"差不多就行"。
+
+_ICON_TINTS = {
+    "sun": (255, 216, 146),
+    "sunrise": (255, 200, 136),
+    "sunset": (255, 176, 126),
+    "moon": (232, 235, 246),
+    "cloud": (198, 210, 232),
+    "rain": (150, 192, 242),
+    "snow": (206, 228, 250),
+    "fog": (198, 208, 224),
+    "wind": (176, 208, 236),
+    "info": (198, 210, 232),
+}
+
+
+def icon_tint(kind: str):
+    return _ICON_TINTS.get(kind, (210, 218, 236))
+
+
+def draw_icon(cr, kind: str, cx: float, cy: float, size: float, color, alpha: float = 1.0,
+              phase: float = 0.5) -> None:
+    """一枚矢量图标。认不出来的 kind 画一个小圆点兜底，绝不抛异常。"""
+    r = max(2.0, size / 2.0)
+    lw = max(1.0, size * 0.11)
+
+    def paint(a: float = 1.0):
+        cr.set_source_rgba(color[0] / 255.0, color[1] / 255.0, color[2] / 255.0,
+                           clamp(alpha * a, 0.0, 1.0))
+
+    def line(x1, y1, x2, y2):
+        cr.move_to(x1, y1)
+        cr.line_to(x2, y2)
+
+    def stroke(a: float = 1.0, width: float | None = None):
+        cr.set_line_width(width if width else lw)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        paint(a)
+        cr.stroke()
+
+    cr.save()
+    if kind == "sun":
+        cr.arc(cx, cy, r * 0.46, 0, TAU)
+        paint()
+        cr.fill()
+        for i in range(8):
+            a = i * TAU / 8.0
+            ca, sa = math.cos(a), math.sin(a)
+            line(cx + ca * r * 0.66, cy + sa * r * 0.66,
+                 cx + ca * r * 0.90, cy + sa * r * 0.90)
+        stroke(0.85, lw * 0.85)
+    elif kind in ("sunrise", "sunset"):
+        rise = kind == "sunrise"
+        hy = cy + r * 0.10
+        line(cx - r * 0.86, hy, cx + r * 0.86, hy)
+        stroke(0.85, lw * 0.9)
+        cr.arc(cx - r * 0.32, hy, r * 0.46, math.pi, TAU)      # 地平线上半个太阳
+        paint()
+        cr.fill()
+        for deg in (65, 90, 115):                              # 三道朝上的光
+            a = math.radians(deg)
+            ca, sa = math.cos(a), math.sin(a)
+            line(cx - r * 0.32 + ca * r * 0.62, hy - sa * r * 0.62,
+                 cx - r * 0.32 + ca * r * 0.86, hy - sa * r * 0.86)
+        stroke(0.7, lw * 0.75)
+        ax = cx + r * 0.66                                     # 箭头：升起来还是落下去
+        if rise:
+            line(ax, hy - r * 0.08, ax, hy - r * 0.84)
+            line(ax - r * 0.22, hy - r * 0.60, ax, hy - r * 0.84)
+            line(ax + r * 0.22, hy - r * 0.60, ax, hy - r * 0.84)
+        else:
+            line(ax, hy - r * 0.08, ax, hy + r * 0.84)
+            line(ax - r * 0.22, hy + r * 0.60, ax, hy + r * 0.84)
+            line(ax + r * 0.22, hy + r * 0.60, ax, hy + r * 0.84)
+        stroke(0.9, lw * 0.9)
+    elif kind == "moon":
+        # 亮面比例 f：0 新月 / 0.5 上下弦 / 1 满月。明暗交界线（终结线）是球面上
+        # 大圆的投影，所以是一段椭圆弧，半宽 r·|cos(相位角)|；蛾眉月时它鼓向
+        # 亮面那一侧，凸月时鼓向暗面那一侧。
+        f = (1.0 - math.cos(TAU * clamp(phase, 0.0, 1.0))) / 2.0
+        rr = r * 0.92
+        b = max(abs(2.0 * f - 1.0) * rr, rr * 0.04)
+        cr.translate(cx, cy)
+        if phase > 0.5:                       # 下弦：亮面在左，照镜子
+            cr.scale(-1.0, 1.0)
+        cr.arc(0, 0, rr, 0, TAU)              # 先描一圈暗轮廓：新月也不能"看不见"
+        stroke(0.30, max(1.0, lw * 0.62))
+        cr.arc(0, 0, rr, -math.pi / 2, math.pi / 2)            # 右半圆：上 → 下
+        cr.save()
+        cr.scale(b / rr, 1.0)
+        if f < 0.5:                                            # 蛾眉：鼓向右边
+            cr.arc_negative(0, 0, rr, math.pi / 2, -math.pi / 2)
+        else:                                                  # 凸月：鼓向左边
+            cr.arc(0, 0, rr, math.pi / 2, 3 * math.pi / 2)
+        cr.restore()
+        cr.close_path()
+        paint()
+        cr.fill()
+    elif kind in ("cloud", "rain", "snow"):
+        top = cy - (r * 0.30 if kind != "cloud" else r * 0.10)
+        for bx, by, br in ((cx - r * 0.44, top + r * 0.20, r * 0.36),
+                           (cx + r * 0.02, top - r * 0.14, r * 0.48),
+                           (cx + r * 0.46, top + r * 0.18, r * 0.32)):
+            cr.arc(bx, by, br, 0, TAU)
+        cr.rectangle(cx - r * 0.62, top + r * 0.12, r * 1.32, r * 0.34)
+        paint()
+        cr.fill()
+        if kind == "rain":
+            for dx in (-r * 0.42, 0.0, r * 0.42):
+                line(cx + dx - r * 0.10, cy + r * 0.40, cx + dx + r * 0.10, cy + r * 0.86)
+            stroke(0.85, lw * 0.8)
+        elif kind == "snow":
+            for dx in (-r * 0.42, 0.0, r * 0.42):
+                cr.arc(cx + dx, cy + r * 0.66, lw * 0.7, 0, TAU)
+            paint(0.85)
+            cr.fill()
+    elif kind == "fog":
+        for dy, frac in ((-r * 0.52, 0.72), (0.0, 0.92), (r * 0.52, 0.58)):
+            y = cy + dy
+            x1, x2 = cx - r * frac, cx + r * frac
+            cr.move_to(x1, y)
+            cr.curve_to(x1 + (x2 - x1) * 0.30, y - r * 0.26,
+                        x1 + (x2 - x1) * 0.70, y + r * 0.26, x2, y)
+        stroke(0.9, lw * 0.85)
+    elif kind == "wind":
+        for dy, frac, hook in ((-r * 0.48, 0.66, True), (0.0, 0.88, False),
+                               (r * 0.48, 0.46, True)):
+            y = cy + dy
+            x2 = cx + r * frac
+            line(cx - r * 0.88, y, x2 - r * 0.20, y)
+            if hook:
+                cr.arc(x2 - r * 0.20, y - r * 0.20, r * 0.20, math.pi / 2, -math.pi / 2)
+            else:
+                line(x2 - r * 0.20, y, x2, y)
+        stroke(0.9, lw * 0.85)
+    elif kind == "refresh":
+        rr = r * 0.66
+        a1, a2 = math.radians(55), math.radians(305)
+        cr.arc(cx, cy, rr, a1, a2)
+        stroke(0.95, lw * 0.9)
+        tipx, tipy = cx + math.cos(a2) * rr, cy + math.sin(a2) * rr
+        back = a2 + math.pi / 2 + math.pi     # 顺着切线往回，画出箭头
+        for s in (-1, 1):
+            ang = back + s * math.radians(33)
+            line(tipx, tipy, tipx + math.cos(ang) * r * 0.40,
+                 tipy + math.sin(ang) * r * 0.40)
+        stroke(0.95, lw * 0.9)
+    elif kind.startswith("chevron"):
+        d = 1.0 if kind.endswith("down") else -1.0
+        if kind.endswith("right"):
+            line(cx - r * 0.24, cy - r * 0.55, cx + r * 0.30, cy)
+            line(cx + r * 0.30, cy, cx - r * 0.24, cy + r * 0.55)
+        else:
+            line(cx - r * 0.55, cy - d * r * 0.26, cx, cy + d * r * 0.30)
+            line(cx, cy + d * r * 0.30, cx + r * 0.55, cy - d * r * 0.26)
+        stroke(0.9)
+    elif kind == "info":
+        cr.arc(cx, cy, r * 0.86, 0, TAU)
+        stroke(0.95, lw * 0.9)
+        cr.arc(cx, cy - r * 0.40, lw * 0.58, 0, TAU)
+        paint()
+        cr.fill()
+        line(cx, cy - r * 0.06, cx, cy + r * 0.46)
+        stroke(0.95, lw * 0.9)
+    elif kind == "check":
+        line(cx - r * 0.55, cy + r * 0.02, cx - r * 0.12, cy + r * 0.46)
+        line(cx - r * 0.12, cy + r * 0.46, cx + r * 0.58, cy - r * 0.46)
+        stroke(0.95, lw)
+    elif kind == "warn":
+        cr.move_to(cx, cy - r * 0.88)
+        cr.line_to(cx + r * 0.92, cy + r * 0.62)
+        cr.line_to(cx - r * 0.92, cy + r * 0.62)
+        cr.close_path()
+        stroke(0.95, lw * 0.9)
+        line(cx, cy - r * 0.30, cx, cy + r * 0.18)
+        stroke(0.95, lw * 0.9)
+        cr.arc(cx, cy + r * 0.42, lw * 0.55, 0, TAU)
+        paint(0.95)
+        cr.fill()
+    else:
+        cr.arc(cx, cy, r * 0.5, 0, TAU)
+        paint(0.8)
+        cr.fill()
+    cr.restore()
 
 
 # --------------------------------------------------------------------------
@@ -361,8 +560,14 @@ class UIState:
 
     def __init__(self) -> None:
         self.show_info = True
+        self.info_compact = False       # 信息卡精简模式（只剩时间与那句话）
+        self.info_rows: list = []       # 这一帧画出来的"事实"（FactRow 列表）
+        self.info_rects: list = []      # 信息卡上可点的方块 (x, y, w, h, kind, when)
+        self.info_hover = -1            # 鼠标停在哪一块上（-1 = 没有）
+        self.info_hover_dt = None       # 悬停在"日弧"上时指到的时刻
         self.show_ribbon = True
         self.ribbon: list[tuple] = []
+        self.ribbon_info: list[str] = []   # 长卷每一格的那句天气（悬停时显示）
         self.ribbon_key = None
         self.ribbon_surface: cairo.ImageSurface | None = None
         self.ribbon_rect = (0.0, 0.0, 0.0, 0.0)
@@ -372,10 +577,28 @@ class UIState:
         self.dragging = False
         self.chip_rect = (0.0, 0.0, 0.0, 0.0)
         self.toast = ""
+        self.toast_icon = "info"        # 提示条左边那枚小图标
         self.toast_until = 0.0
         self.toast_rect = (0.0, 0.0, 0.0, 0.0)
         self.toast_detail = ""          # 非空时：点提示条可以看/复制完整内容
         self.hint_shown = False
+
+
+@dataclass
+class FactRow:
+    """「此刻的事实」里的一行：图标 + 标题 + 主值 + 副值 + 点它做什么。
+
+    action 有三种：""（只是看看）、"open"（跳到 when 那一刻去预览）、
+    "detail"（摊开这条背后的完整数据）。窗口那边照 action 决定点下去干什么，
+    画的地方只管把方块记进 ui.info_rects。
+    """
+
+    icon: str
+    label: str
+    value: str
+    note: str = ""
+    action: str = ""
+    when: datetime | None = None
 
 
 class CacheSlot:
@@ -428,6 +651,8 @@ class SkyPainter:
         self._city = CacheSlot()
         self._overlay = CacheSlot()
         self._sill = CacheSlot()
+        self._info = CacheSlot()            # 信息卡整张的离屏图（见 _draw_info）
+        self._info_rects: list = []         # 卡上能点的方块，随那张图一起缓存
         self._layout_cache: dict = {}
         self._street_roster: list | None = None
         self._street_trees: list | None = None
@@ -1572,18 +1797,31 @@ class SkyPainter:
             cr.set_source_rgba(1, 1, 1, 0.30)
             cr.rectangle(hx, y0 + rh * 0.16, 1, rh * 0.68)
             cr.fill()
-        for key, col in (("sunrise", (255, 236, 190)), ("sunset", (255, 190, 130))):
+        # 日出 / 日落：不只是两道刻度，而是带上图标与时刻的标记
+        mark_size = max(9.0, min(h * 0.014, 12.5))
+        for key, kind, col in (("sunrise", "sunrise", (255, 214, 150)),
+                               ("sunset", "sunset", (255, 186, 128))):
             ev = scene.events.get(key)
             if not ev:
                 continue
-            f = (ev.hour * 60 + ev.minute) / 1440.0
-            mx = x0 + rw * f
-            cr.set_source_rgba(col[0] / 255, col[1] / 255, col[2] / 255, 0.85)
-            cr.rectangle(mx - 1, y0 - 2.5, 2, 3)
-            cr.fill()
+            mx = x0 + rw * clamp(self._day_frac(ev), 0, 1)
             cr.set_source_rgba(0, 0, 0, 0.35)
-            cr.rectangle(mx - 1, y0 + rh, 2, 1.5)
+            cr.rectangle(mx - 1, y0, 2, rh)
             cr.fill()
+            ir = rh * 0.60
+            icy = y0 - ir - 3.0
+            cr.set_source_rgba(0.05, 0.06, 0.10, 0.74)
+            cr.arc(mx, icy, ir + 1.4, 0, TAU)
+            cr.fill()
+            cr.set_source_rgba(1, 1, 1, 0.16)
+            cr.arc(mx, icy, ir + 1.4, 0, TAU)
+            cr.set_line_width(1)
+            cr.stroke()
+            draw_icon(cr, kind, mx, icy, ir * 1.55, col, 0.95)
+            label = ev.strftime("%H:%M")
+            tw, _ = draw_text(cr, label, 0, -1000, mark_size, (255, 255, 255), 0.0)
+            draw_text(cr, label, clamp(mx - tw / 2, x0, x0 + rw - tw),
+                      icy - ir - mark_size - 6.0, mark_size, (244, 240, 234), 0.68)
 
         # 此刻的游标
         nx = x0 + rw * clamp(frac_now, 0, 1)
@@ -1603,19 +1841,32 @@ class SkyPainter:
             cr.rectangle(mx - 1, y0 - 4, 2, rh + 8)
             cr.fill()
             label = mark.strftime("%H:%M")
-            tw, th = draw_text(cr, label, mx, y0 - 34, max(10, h * 0.0155),
-                               (255, 255, 255), 0.0)  # 先量一次尺寸
-            bw, bh = tw + 16, th + 10
+            size = max(10.0, h * 0.0155)
+            # 顺着长卷查一查这一刻的天气（app 每次重建长卷时一并算好）
+            sub = ""
+            if ui.ribbon_info:
+                i = clamp(int(clamp(f, 0, 0.9999) * len(ui.ribbon)),
+                          0, len(ui.ribbon_info) - 1)
+                sub = ui.ribbon_info[i]
+            tw, th = draw_text(cr, label, 0, -1000, size, (255, 255, 255), 0.0)
+            sw, sh = (draw_text(cr, sub, 0, -1000, size * 0.82, (255, 255, 255), 0.0)
+                      if sub else (0.0, 0.0))
+            bw = max(tw, sw) + 22
+            bh = th + (sh + 5 if sub else 0) + 10
             bx = clamp(mx - bw / 2, x0, x0 + rw - bw)
-            cr.set_source_rgba(0.05, 0.06, 0.10, 0.72)
-            rounded_rect(cr, bx, y0 - 14 - bh, bw, bh, bh / 2)
+            byy = y0 - 14 - bh
+            cr.set_source_rgba(0.05, 0.06, 0.10, 0.76)
+            rounded_rect(cr, bx, byy, bw, bh, min(bh / 2, 14.0))
             cr.fill()
             cr.set_source_rgba(1, 1, 1, 0.14)
-            rounded_rect(cr, bx, y0 - 14 - bh, bw, bh, bh / 2)
+            rounded_rect(cr, bx, byy, bw, bh, min(bh / 2, 14.0))
             cr.set_line_width(1)
             cr.stroke()
-            draw_text(cr, label, bx + bw / 2, y0 - 11 - bh, max(10, h * 0.0155),
-                      (250, 250, 255), 0.95, align="center")
+            draw_text(cr, label, bx + bw / 2, byy + 5, size, (250, 250, 255), 0.95,
+                      align="center")
+            if sub:
+                draw_text(cr, sub, bx + bw / 2, byy + 6 + th, size * 0.82,
+                          (226, 234, 248), 0.72, align="center")
 
         # 小时标签
         label_size = max(8.0, min(h * 0.013, 12.0))
@@ -1628,118 +1879,383 @@ class SkyPainter:
     # ------------------------------------------------------------------
     # 信息卡片
     # ------------------------------------------------------------------
-    def _rows(self, scene: Scene):
+    #
+    # 这张卡是**可以点的**（1.1.9 起）：
+    #   * 每一行都是"图标 + 标题 + 数值"，鼠标停上去整行亮起来；
+    #   * 点日出/日落/月亮 → 画面跳到那一刻（还是那套预览，Esc 或点提示条回此刻）；
+    #   * 点窗外/风     → 摊开这条背后的完整数据（体感温度、能见度、数据来源…）；
+    #   * 右上角箭头收起卡片，右下角刷新按钮立刻重问一次真实天气；
+    #   * 日出到日落那条"日弧"可以悬停看时刻、点一下跳过去。
+    # 命中方块全部记进 ui.info_rects，窗口那边（app.py）照着 kind 决定做什么。
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _day_frac(dt) -> float:
+        return clamp((dt.hour * 60 + dt.minute) / 1440.0, 0.0, 1.0)
+
+    @staticmethod
+    def _icon_button(cr, kind, cx, cy, size, color, alpha=0.72, hover=False):
+        """一个"看着就能点"的小方块：淡底 + 一枚矢量图标。"""
+        cr.set_source_rgba(1, 1, 1, 0.16 if hover else 0.08)
+        rounded_rect(cr, cx - size / 2, cy - size / 2, size, size, size * 0.32)
+        cr.fill()
+        draw_icon(cr, kind, cx, cy, size * 0.52, color, alpha)
+
+    @staticmethod
+    def _weather_icon(scene: Scene) -> str:
+        """窗外那一行该配哪枚图标——按"天上真正有什么"来选。"""
+        if scene.precip_kind == "snow":
+            return "snow"
+        if scene.precip_kind == "rain":
+            return "rain"
+        if scene.fog:
+            return "fog"
+        return "cloud" if scene.cloud >= 55 else "sun"
+
+    def _rows(self, scene: Scene) -> list[FactRow]:
         ev = scene.events
-        rows = []
+        rows: list[FactRow] = []
+        noon = ev.get("noon")
         if scene.sun_alt > -0.9:
-            rows.append(("太阳", f"{compass(scene.sun_az)} {scene.sun_az:.0f}° · 仰角 "
-                              f"{scene.sun_alt:.1f}°"))
+            rows.append(FactRow("sun", "太阳", f"{compass(scene.sun_az)} {scene.sun_az:.0f}°",
+                                f"仰角 {scene.sun_alt:.1f}°", "open", noon))
         else:
-            rows.append(("太阳", f"已落到地平线下 {compass(scene.sun_az)}方"))
+            sunr_ = ev.get("sunrise")
+            rising = bool(sunr_ and scene.when < sunr_)
+            rows.append(FactRow("sunrise" if rising else "sunset", "太阳",
+                                f"在{compass(scene.sun_az)}方地平线下",
+                                "还没升起" if rising else "已经落下", "open", noon))
         sunr = ev.get("sunrise")
-        rows.append(("日出", f"{sunr.strftime('%H:%M') if sunr else '—'}"
-                          f" · 金色时刻至 {ev['golden_morning_end'].strftime('%H:%M')}"
-                          if sunr and ev.get("golden_morning_end") else "—"))
+        golden = ev.get("golden_morning_end")
+        rows.append(FactRow("sunrise", "日出",
+                            sunr.strftime("%H:%M") if sunr else "极昼 / 极夜",
+                            f"金色时刻至 {golden.strftime('%H:%M')}"
+                            if sunr and golden else "",
+                            "open", sunr))
         suns = ev.get("sunset")
         left = scene.daylight_left
-        rows.append(("日落", f"{suns.strftime('%H:%M') if suns else '—'}"
-                          + (f" · 还剩 {duration_zh(left)}" if left else " · 今天已过去")))
-        moon = f"{phase_name_simple(scene.moon_phase)} {scene.moon_illum * 100:.0f}%"
+        rows.append(FactRow("sunset", "日落",
+                            suns.strftime("%H:%M") if suns else "极昼 / 极夜",
+                            f"还剩 {duration_zh(left)}" if left
+                            else ("今天已过去" if suns else ""),
+                            "open", suns))
         mr, ms = ev.get("moonrise"), ev.get("moonset")
-        moon += f" · 月出 {mr.strftime('%H:%M') if mr else '—'}"
-        if ms:
-            moon += f" · 月落 {ms.strftime('%H:%M')}"
-        rows.append(("月亮", moon))
+        note = " · ".join(x for x in (
+            f"月出 {mr.strftime('%H:%M')}" if mr else "",
+            f"月落 {ms.strftime('%H:%M')}" if ms else "") if x)
+        rows.append(FactRow("moon", "月亮",
+                            f"{phase_name_simple(scene.moon_phase)} {scene.moon_illum * 100:.0f}%",
+                            note, "open", mr or ms))
         if scene.has_weather:
-            w = (f"{scene.weather_text} {scene.temp:.0f}°C · 云量 {scene.cloud:.0f}%")
-            rows.append(("窗外", w))
-            rows.append(("风", f"{compass(scene.wind_dir)} {scene.wind_speed:.1f} km/h"
-                             + (f" · 湿度 {scene.humidity:.0f}%" if scene.humidity else "")))
+            rows.append(FactRow(self._weather_icon(scene), "窗外",
+                                f"{scene.weather_text} {scene.temp:.0f}°C",
+                                f"云量 {scene.cloud:.0f}%", "detail"))
+            if scene.wind_speed:
+                rows.append(FactRow("wind", "风",
+                                    f"{compass(scene.wind_dir)} {scene.wind_speed:.1f} km/h",
+                                    f"湿度 {scene.humidity:.0f}%" if scene.humidity else "",
+                                    "detail"))
         elif scene.weather_disabled:
             # 用户自己关的天气，别写成"未联网"——那会把人指去查网络
-            rows.append(("窗外", "你关掉了天气 · 只看天"))
+            rows.append(FactRow("info", "窗外", "你关掉了天气 · 只看天", "", "detail"))
         else:
-            rows.append(("窗外", "未联网 · 仅天文模式"))
+            rows.append(FactRow("cloud", "窗外", "未联网 · 仅天文模式", "", "detail"))
         return rows
 
     def _draw_info(self, cr, w, h, scene: Scene, az0, fov, direct):
+        """把这张卡画上去——大部分时间其实是把缓存贴上去（见 _paint_info）。
+
+        一帧要下上百笔（图标、文字、圆角），而这张卡只在"分钟变了 / 鼠标划过 /
+        天气更新"时才真的不一样。所以整张卡离屏缓存，按 _info_key 判断要不要重画。
+        """
+        L = self._info_layout(w, h, scene)
+        x = 0.028 * w
+        y = 0.036 * h
+        edge = 8 * L["scale"]                  # 给阴影留的边
+        # 离屏图取整后 +1：多出的一像素保证右下角的圆角不被裁掉；
+        # 但**存进去的尺寸必须和交给 stale() 的尺寸一致**，否则永远命中不了。
+        box_w = int(L["card_w"] + edge * 2) + 1
+        box_h = int(L["card_h"] + edge * 2) + 1
+        bx, by = x - edge, y - edge
+        key = self._info_key(w, h, scene)
+        if self._info.stale(key, box_w, box_h):
+            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, box_w, box_h)
+            inner = cairo.Context(surf)
+            inner.translate(-bx, -by)
+            self._info_rects = self._paint_info(inner, scene, x, y, L)
+            self._info.store(key, surf)
+        if self._info.surf is not None:
+            cr.save()
+            cr.set_source_surface(self._info.surf, bx, by)
+            cr.paint()
+            cr.restore()
+        self.ui.info_rows = L["rows"]
+        # 命中区每次照交不误：它是纯数据，窗口拿它判断鼠标点到了哪儿
+        self.ui.info_rects = list(self._info_rects)
+
+    def _info_key(self, w, h, scene: Scene):
+        """这张卡的缓存 key——**卡片上任何一个字变了，这里就得跟着变**。
+
+        漏一个参数，就是"卡片还显示着上一分钟 / 上一份天气"（CacheSlot 存在的
+        理由正是这句话）。所以宁可多带几个：时刻、预览、悬停、精简模式、
+        天气的每个字段、天色。
+        """
+        hover_dt = self.ui.info_hover_dt
+        return (
+            int(w), int(h),
+            scene.when.strftime("%Y-%m-%d %H:%M"), scene.preview, scene.period_name,
+            scene.location_name, scene.location_label,
+            self.ui.info_hover, bool(self.ui.info_compact),
+            hover_dt.strftime("%H:%M") if hover_dt else "",
+            scene.sun_alt >= -0.9, round(scene.moon_phase, 3),
+            scene.has_weather, scene.weather_disabled, scene.weather_stale,
+            scene.weather_text, round(scene.cloud), round(scene.temp),
+            round(scene.apparent), round(scene.humidity),
+            round(scene.wind_speed, 1), round(scene.wind_dir),
+            tuple(round(c) for c in scene.mood.horizon),
+            tuple(sorted((k, str(v)) for k, v in scene.events.items())),
+        )
+
+    def _info_layout(self, w, h, scene: Scene) -> dict:
+        """这张卡的排版：所有尺寸都在这里一次算清。
+
+        离屏图裁多大、卡片画多高，用的是同一份数字——分开算迟早会对不上
+        （不是被裁掉一条边，就是底下多出一块空白）。
+        """
         scale = clamp(min(w / 1000.0, h / 620.0), 0.78, 1.5)
-        pad = 18 * scale
-        card_w = clamp(w * 0.40, 268 * scale, 420 * scale)
-        x = 0.030 * w
-        y = 0.040 * h
+        pad = 16 * scale
+        card_w = clamp(w * 0.42, 296 * scale, 428 * scale)
+        compact = bool(self.ui.info_compact)
         rows = self._rows(scene)
-        line_h = 21 * scale
-        hint = human_hint(scene)
-        per_line = max(8, int((card_w - pad * 2 - 14 * scale) / (12.6 * scale)))
-        hint_lines_list = wrap_cjk(hint, per_line)
-        hint_lines = len(hint_lines_list)
-        card_h = pad + 24 * scale + 40 * scale + 12 * scale + line_h * len(rows) \
-            + 10 * scale + hint_lines * 20 * scale + pad * 1.35
+        per_line = max(8, int((card_w - pad * 2 - 12 * scale) / (12.4 * scale)))
+        hint_lines = wrap_cjk(human_hint(scene), per_line)
+        if compact:
+            hint_lines = hint_lines[:2]
+        sunr = scene.events.get("sunrise")
+        suns = scene.events.get("sunset")
+        show_arc = bool(sunr and suns and suns > sunr) and not compact
+        head_h = 30 * scale
+        time_h = (34 if compact else 44) * scale
+        arc_h = 30 * scale if show_arc else 0
+        div_h = 12 * scale if not compact else 0
+        row_h = 24 * scale
+        rows_h = 0 if compact else row_h * len(rows)
+        hint_h = 19 * scale * len(hint_lines) + 6 * scale
+        foot_h = 22 * scale
+        card_h = (pad + head_h + time_h + arc_h + div_h + rows_h + hint_h
+                  + foot_h + pad * 0.5)
+        return {
+            "scale": scale, "pad": pad, "card_w": card_w, "card_h": card_h,
+            "rows": rows, "compact": compact, "hint_lines": hint_lines,
+            "show_arc": show_arc, "sunr": sunr, "suns": suns,
+            "head_h": head_h, "time_h": time_h, "arc_h": arc_h, "div_h": div_h,
+            "row_h": row_h, "rows_h": rows_h, "hint_h": hint_h, "foot_h": foot_h,
+            "accent": scene.mood.horizon,
+        }
+
+    def _paint_info(self, cr, scene: Scene, x: float, y: float, L: dict) -> list:
+        """真正下笔的那一遍：画在离屏图上，返回这张卡上所有能点的方块。"""
+        scale, pad, card_w, card_h = L["scale"], L["pad"], L["card_w"], L["card_h"]
+        rows, compact = L["rows"], L["compact"]
+        hint_lines = L["hint_lines"]
+        sunr, suns, show_arc = L["sunr"], L["suns"], L["show_arc"]
+        head_h, time_h, arc_h = L["head_h"], L["time_h"], L["arc_h"]
+        div_h, row_h, hint_h = L["div_h"], L["row_h"], L["hint_h"]
+        accent = L["accent"]
+        hover = self.ui.info_hover
+        rects: list = []
 
         cr.save()
-        # 卡片阴影
+        # 卡片：阴影 + 玻璃底 + 随天色的一道顶光
         for i, a in ((5, 0.05), (3, 0.06), (1.5, 0.08)):
             cr.set_source_rgba(0, 0, 0, a)
             rounded_rect(cr, x - i, y - i + 2, card_w + i * 2, card_h + i * 2,
                          18 * scale)
             cr.fill()
-        cr.set_source_rgba(0.045, 0.055, 0.085, 0.66)
+        grad = cairo.LinearGradient(x, y, x + card_w * 0.7, y + card_h)
+        grad.add_color_stop_rgba(0, 0.07, 0.08, 0.12, 0.74)
+        grad.add_color_stop_rgba(1, 0.03, 0.04, 0.07, 0.62)
         rounded_rect(cr, x, y, card_w, card_h, 18 * scale)
+        cr.set_source(grad)
         cr.fill()
+        cr.save()
+        rounded_rect(cr, x, y, card_w, card_h, 18 * scale)
+        cr.clip()
+        top = cairo.LinearGradient(x, y, x, y + 2.4 * scale)
+        top.add_color_stop_rgba(0, accent[0] / 255, accent[1] / 255, accent[2] / 255, 0.5)
+        top.add_color_stop_rgba(1, accent[0] / 255, accent[1] / 255, accent[2] / 255, 0.0)
+        cr.set_source(top)
+        cr.rectangle(x, y, card_w, 2.4 * scale)
+        cr.fill()
+        cr.restore()
         cr.set_source_rgba(1, 1, 1, 0.10)
         rounded_rect(cr, x, y, card_w, card_h, 18 * scale)
         cr.set_line_width(1)
         cr.stroke()
 
         cx = x + pad
-        cy = y + pad * 0.85
-        # 城市 + 状态
+        cy = y + pad * 0.75
+
+        # ---- 抬头：城市 · 此刻/预览 · 收起 ----
         name = scene.location_name or scene.location_label or ""
-        draw_text(cr, name, cx, cy, 17 * scale, (240, 244, 252), 0.92,
-                  weight=Pango.Weight.MEDIUM)
-        tw = font(cr, 17 * scale, Pango.Weight.MEDIUM)
-        tw.set_text(name, -1)
-        chip = "预览" if scene.preview else "此刻"
-        chip_x = cx + tw.get_pixel_size()[0] + 10 * scale
-        chip_w = 44 * scale
-        accent = scene.mood.horizon
-        cr.set_source_rgba(accent[0] / 255, accent[1] / 255, accent[2] / 255, 0.26)
-        rounded_rect(cr, chip_x, cy + 1, chip_w, 18 * scale, 9 * scale)
+        tw, _ = draw_text(cr, name, cx, cy, 16 * scale, (240, 244, 252), 0.94,
+                          weight=Pango.Weight.MEDIUM)
+        chip_text = f"预览 {scene.when.strftime('%H:%M')}" if scene.preview else "此刻"
+        chip_w = (78 if scene.preview else 46) * scale
+        chip_x = min(cx + tw + 9 * scale,
+                     x + card_w - pad - chip_w - 28 * scale)
+        cc = (255, 176, 96) if scene.preview else accent
+        cr.set_source_rgba(cc[0] / 255, cc[1] / 255, cc[2] / 255, 0.26)
+        rounded_rect(cr, chip_x, cy + 1.5 * scale, chip_w, 18 * scale, 9 * scale)
         cr.fill()
-        draw_text(cr, chip, chip_x + chip_w / 2, cy + 3, 11 * scale, (255, 255, 255),
-                  0.92, align="center")
-        # 时间
-        cy += 26 * scale
-        draw_text(cr, scene.when.strftime("%H:%M"), cx, cy, 34 * scale,
-                  (255, 255, 255), 0.97, weight=Pango.Weight.LIGHT)
+        draw_text(cr, chip_text, chip_x + chip_w / 2, cy + 3.5 * scale, 11 * scale,
+                  (255, 255, 255), 0.94, align="center")
+        btn = 22 * scale
+        bx, by = x + card_w - pad - btn, cy + 0.5 * scale
+        self._icon_button(cr, "chevron-down" if compact else "chevron-up",
+                          bx + btn / 2, by + btn / 2, btn, (234, 240, 252), 0.74,
+                          hover=hover == len(rects))
+        rects.append((bx, by, btn, btn, "toggle", None))
+        cy += head_h
+
+        # ---- 大字时间 + 日期 ----
+        tw, _ = draw_text(cr, scene.when.strftime("%H:%M"), cx, cy,
+                          27 * scale if compact else 34 * scale,
+                          (255, 255, 255), 0.97, weight=Pango.Weight.LIGHT)
         weekday = "一二三四五六日"[scene.when.weekday()]
         draw_text(cr, f"{scene.when.month} 月 {scene.when.day} 日 · 周{weekday}"
                       f" · {scene.period_name}",
-                  cx + 96 * scale, cy + 16 * scale, 12.5 * scale, (226, 232, 245), 0.62)
-        cy += 46 * scale
-        cr.set_source_rgba(1, 1, 1, 0.10)
-        cr.rectangle(cx, cy, card_w - pad * 2, 1)
-        cr.fill()
-        cy += 10 * scale
-        for label, value in rows:
-            draw_text(cr, label, cx, cy, 12.5 * scale, (210, 218, 235), 0.52)
-            draw_text(cr, value, cx + 46 * scale, cy, 12.5 * scale, (238, 242, 250), 0.88)
-            cy += line_h
+                  cx + tw + 10 * scale, cy + (11 if compact else 15) * scale,
+                  12.5 * scale, (226, 232, 245), 0.62)
+        cy += time_h
+
+        # ---- 日弧：日出到日落，此刻在哪儿 ----
+        if show_arc:
+            ax0 = cx
+            aw = card_w - pad * 2
+            ah = 5 * scale
+            ay = cy + 4 * scale
+            f0, f1 = self._day_frac(sunr), self._day_frac(suns)
+            cr.set_source_rgba(1, 1, 1, 0.13)
+            rounded_rect(cr, ax0, ay, aw, ah, ah / 2)
+            cr.fill()
+            cr.save()
+            rounded_rect(cr, ax0, ay, aw, ah, ah / 2)
+            cr.clip()
+            if f1 > f0:
+                g = cairo.LinearGradient(ax0 + aw * f0, 0, ax0 + aw * f1, 0)
+                g.add_color_stop_rgba(0, 1.0, 0.80, 0.45, 0.95)
+                g.add_color_stop_rgba(1, accent[0] / 255, accent[1] / 255,
+                                      accent[2] / 255, 0.95)
+                cr.set_source(g)
+                cr.rectangle(ax0 + aw * f0, ay, aw * (f1 - f0), ah)
+                cr.fill()
+            if self.ui.info_hover_dt is not None:        # 悬停：一条跟随的细游标
+                hx = ax0 + aw * clamp(self._day_frac(self.ui.info_hover_dt), 0, 1)
+                cr.set_source_rgba(1, 1, 1, 0.85)
+                cr.rectangle(hx - 0.7 * scale, ay - 5 * scale, 1.4 * scale,
+                             ah + 10 * scale)
+                cr.fill()
+            mx = ax0 + aw * clamp(self._day_frac(scene.when), 0, 1)
+            cr.set_source_rgba(1, 1, 1, 0.95)            # 此刻：一枚小圆点
+            cr.arc(mx, ay + ah / 2, ah * 0.92, 0, TAU)
+            cr.fill()
+            cr.set_source_rgba(0.06, 0.07, 0.11, 0.92)
+            cr.arc(mx, ay + ah / 2, ah * 0.42, 0, TAU)
+            cr.fill()
+            cr.restore()
+            ly = ay + ah + 5 * scale
+            draw_icon(cr, "sunrise", ax0 + 6 * scale, ly + 6 * scale, 13 * scale,
+                      icon_tint("sunrise"), 0.9)
+            draw_text(cr, sunr.strftime("%H:%M"), ax0 + 15 * scale, ly, 11 * scale,
+                      (246, 240, 232), 0.68)
+            tail = (f"还剩 {duration_zh(scene.daylight_left)}"
+                    if scene.daylight_left else "今天已过去")
+            ttw, _ = draw_text(cr, tail, 0, -1000, 11 * scale, (255, 255, 255), 0.0)
+            draw_text(cr, tail, ax0 + aw - ttw, ly, 11 * scale, (250, 250, 255), 0.74)
+            rects.append((ax0, ay - 7 * scale, aw, ah + 16 * scale, "arc", None))
+            cy += arc_h
+
+        # ---- 一行行事实 ----
+        if not compact:
+            cr.set_source_rgba(1, 1, 1, 0.09)
+            cr.rectangle(cx, cy + 2 * scale, card_w - pad * 2, 1)
+            cr.fill()
+            cy += div_h
+            for row in rows:
+                rx = cx - 5 * scale
+                rw2 = card_w - pad * 2 + 10 * scale
+                rh = row_h - 3 * scale
+                ry = cy - 2.5 * scale
+                idx = len(rects)
+                hovered = hover == idx
+                if hovered:
+                    cr.set_source_rgba(1, 1, 1, 0.10)
+                    rounded_rect(cr, rx, ry, rw2, rh, 8 * scale)
+                    cr.fill()
+                    cr.set_source_rgba(accent[0] / 255, accent[1] / 255,
+                                       accent[2] / 255, 0.9)
+                    rounded_rect(cr, rx, ry + 3 * scale, 2.2 * scale, rh - 6 * scale,
+                                 1.1 * scale)
+                    cr.fill()
+                badge = 20 * scale
+                bcx, bcy = rx + 5 * scale + badge / 2, cy + badge / 2 + 1 * scale
+                cr.set_source_rgba(1, 1, 1, 0.14 if hovered else 0.07)
+                rounded_rect(cr, bcx - badge / 2, bcy - badge / 2, badge, badge,
+                             badge * 0.34)
+                cr.fill()
+                draw_icon(cr, row.icon, bcx, bcy, badge * 0.70, icon_tint(row.icon),
+                          0.95, phase=scene.moon_phase)
+                tx = rx + 5 * scale + badge + 9 * scale
+                draw_text(cr, row.label, tx, cy + 1 * scale, 12 * scale,
+                          (206, 214, 232), 0.56)
+                vx = tx + 40 * scale
+                vw, _ = draw_text(cr, row.value, vx, cy + 0.5 * scale, 13 * scale,
+                                  (240, 244, 252), 0.94)
+                if row.note:
+                    # 小窗口里装不下就别硬挤：副值整条不画，也不截半句
+                    nw, _ = draw_text(cr, row.note, 0, -1000, 11.5 * scale,
+                                      (255, 255, 255), 0.0)
+                    # 右边那条"点了能跳过去"的小箭头也要留出位置
+                    room = 18 * scale if row.action == "open" else 12 * scale
+                    if vx + vw + 7 * scale + nw <= rx + rw2 - room:
+                        draw_text(cr, row.note, vx + vw + 7 * scale,
+                                  cy + 2.5 * scale, 11.5 * scale,
+                                  (214, 222, 238), 0.5)
+                if row.action == "open":
+                    draw_icon(cr, "chevron-right", rx + rw2 - 9 * scale,
+                              cy + badge / 2 + 1 * scale, 12 * scale,
+                              (236, 241, 252), 0.32)
+                rects.append((rx, ry, rw2, rh, row.action, row.when))
+                cy += row_h
+
+        # ---- 一句人话 ----
         cy += 4 * scale
-        # 一句人话
+        bar_h = max(16 * scale, 19 * scale * len(hint_lines) - 5 * scale)
         cr.set_source_rgba(accent[0] / 255, accent[1] / 255, accent[2] / 255, 0.85)
-        rounded_rect(cr, cx, cy + 2 * scale, 2.5 * scale, 16 * scale, 1.5 * scale)
+        rounded_rect(cr, cx, cy + 1.5 * scale, 2.5 * scale, bar_h, 1.2 * scale)
         cr.fill()
-        for i, line in enumerate(hint_lines_list):
-            draw_text(cr, line, cx + 10 * scale, cy + i * 18 * scale,
-                      12.5 * scale, (250, 250, 255), 0.80)
-        cy += (hint_lines - 1) * 18 * scale + 22 * scale
+        for i, line in enumerate(hint_lines):
+            draw_text(cr, line, cx + 10 * scale, cy + i * 19 * scale, 12.5 * scale,
+                      (250, 250, 255), 0.82)
+        cy += hint_h
+
+        # ---- 脚注：数据从哪来的 + 立刻刷新一次 ----
         foot = "天文 · 本地计算　　天气 · Open-Meteo"
         if scene.weather_stale:
-            foot = "网络不通 · 显示上次天气　　天文 · 本地计算"
-        draw_text(cr, foot, cx, cy + 2 * scale, 10 * scale, (200, 210, 230), 0.38)
+            foot = "网络不通 · 显示上次天气　天文 · 本地计算"
+        elif not scene.has_weather:
+            foot = "天文 · 本地计算　　天气未接入"
+        draw_text(cr, foot, cx, cy, 10 * scale, (200, 210, 230), 0.38)
+        rb = 20 * scale
+        rbx, rby = x + card_w - pad - rb, cy - 5 * scale
+        self._icon_button(cr, "refresh", rbx + rb / 2, rby + rb / 2, rb,
+                          (228, 236, 250), 0.8,
+                          hover=hover == len(rects))
+        rects.append((rbx - 2 * scale, rby - 2 * scale, rb + 4 * scale,
+                      rb + 4 * scale, "refresh", None))
         cr.restore()
+        return rects
 
     # ------------------------------------------------------------------
     def _draw_toast(self, cr, w, h):
@@ -1752,7 +2268,8 @@ class SkyPainter:
         size = clamp(h * 0.020, 12.0, 18.0)
         text = ui.toast + ("　·　详情" if ui.toast_detail else "")
         tw, th = draw_text(cr, text, 0, -1000, size, (255, 255, 255), 0.0)
-        bw, bh = tw + 34, th + 18
+        icon = ui.toast_icon or "info"
+        bw, bh = tw + 34 + size * 1.7, th + 18
         bx = w / 2 - bw / 2
         by = SILL_Y * h - bh - 22
         cr.set_source_rgba(0.05, 0.06, 0.10, 0.70 * alpha)
@@ -1762,8 +2279,12 @@ class SkyPainter:
         rounded_rect(cr, bx, by, bw, bh, bh / 2)
         cr.set_line_width(1)
         cr.stroke()
-        draw_text(cr, text, w / 2, by + 8, size, (250, 251, 255), 0.95 * alpha,
-                  align="center")
+        tint = {"check": (150, 226, 168), "warn": (255, 198, 120),
+                "refresh": (176, 208, 240)}.get(icon, (196, 212, 244))
+        draw_icon(cr, icon, bx + bh / 2 + 1, by + bh / 2, size * 0.95, tint,
+                  0.95 * alpha)
+        draw_text(cr, text, bx + bh / 2 + 6 + size * 0.85, by + 8, size,
+                  (250, 251, 255), 0.95 * alpha)
         ui.toast_rect = (bx, by, bw, bh)
 
     def draw_chip(self, cr, w, h):

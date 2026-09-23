@@ -9,6 +9,7 @@ GTK 4.6 + libadwaita 1.1 上没有 `Adw.MessageDialog` / `Adw.AboutWindow` 这�
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timezone as _tz
 
 import gi
 
@@ -18,6 +19,37 @@ from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config as cfgmod
 from .weather import fallback_timezone, geocode, timezone_for
+
+
+def _local_clock(tz: str) -> str:
+    """那个地方此刻几点？算不出来（时区名不认识）就返回空串。"""
+    if not tz or tz == "auto":
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(tz)).strftime("%H:%M")
+    except Exception:
+        return ""
+
+
+def _offset_note(tz: str, base_tz: str) -> str:
+    """那个地方比"我这儿"快/慢多少——这个窗外的东西，只对看别人的天有用。"""
+    if not tz or not base_tz or tz == base_tz:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(_tz.utc)
+        delta = (now.astimezone(ZoneInfo(tz)).utcoffset()
+                 - now.astimezone(ZoneInfo(base_tz)).utcoffset())
+        hours = delta.total_seconds() / 3600.0
+    except Exception:
+        return ""
+    if abs(hours) < 0.01:
+        return "同时刻"
+    whole = int(abs(hours))
+    half = abs(hours) - whole > 0.4
+    span = f"{whole} 小时" + ("半" if half else "")
+    return ("快 " if hours > 0 else "慢 ") + span
 
 
 def escape_closes(window: Gtk.Window) -> None:
@@ -242,12 +274,14 @@ class TimeTravelDialog(Gtk.Window):
 class CityDialog(Gtk.Window):
     """换一个城市（联网搜索；也可以直接输入经纬度）。"""
 
-    def __init__(self, parent, on_pick, on_notice=None):
+    def __init__(self, parent, on_pick, on_notice=None, current=None):
         super().__init__(modal=True, transient_for=parent, default_width=470,
                          default_height=520)
         self.set_title("换一扇窗")
         self.on_pick = on_pick
         self.on_notice = on_notice      # 一句话提示（时区没查到之类），可以为空
+        self.current = current          # 现在朝着的那个城市（列表里标出来）
+        self.current_tz = getattr(current, "timezone", "") if current else ""
         self._searching = False
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -333,9 +367,25 @@ class CityDialog(Gtk.Window):
             self.status.set_text(f"找到 {len(real)} 个地方")
         for r in real:
             title = r["name"]
-            sub = " · ".join(x for x in (r.get("admin"), r.get("country")) if x)
+            tz = r.get("timezone") or ""
+            bits = [x for x in (r.get("admin"), r.get("country")) if x]
+            clock = _local_clock(tz)
+            if clock:
+                diff = _offset_note(tz, self.current_tz)
+                bits.append(f"当地 {clock}" + (f"（{diff}）" if diff else ""))
+            sub = " · ".join(bits)
             row = Adw.ActionRow(title=title, subtitle=sub or "—", activatable=True)
-            row.add_prefix(Gtk.Image.new_from_icon_name("mark-location-symbolic"))
+            here = bool(self.current
+                        and title == self.current.name
+                        and abs(r["lat"] - self.current.lat) < 0.05)
+            row.add_prefix(Gtk.Image.new_from_icon_name(
+                "emblem-ok-symbolic" if here else "mark-location-symbolic"))
+            if here:
+                tag = Gtk.Label(label="正在看")
+                tag.add_css_class("accent")
+                row.add_suffix(tag)
+            row.set_tooltip_text(f"{r['lat']:.4f}, {r['lon']:.4f}"
+                                 + (f" · {tz}" if tz else ""))
             row.set_activatable_widget(None)
             row.data = r  # type: ignore[attr-defined]
             self.listbox.append(row)

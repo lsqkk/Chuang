@@ -65,10 +65,11 @@ except ImportError:                     # 还没拆的话就在 app 里
 
 # 勾选项与单选项的清单：改这两个集合等于改菜单长什么样，得是自觉的
 EXPECTED_TOGGLES = {
-    "pin", "weather", "info", "autostart", "autostarthidden",
+    "pin", "weather", "info", "infocompact", "ribbon",
+    "autostart", "autostarthidden",
     "wallpaperauto", "wallpaperinfo", "wallpaperribbon", "autoupdate",
 }
-EXPECTED_RADIOS = {"closebehavior", "wallpaperinterval"}
+EXPECTED_RADIOS = {"closebehavior", "wallpaperinterval", "framerate"}
 
 # ---- 动作清单：每个动作要么"能安全激活"，要么"写明为什么不激活 -------------
 # 加新动作时必须二选一，否则测试会失败——这样就不会有人悄悄加一个
@@ -88,6 +89,9 @@ SAFE_TO_ACTIVATE = {
     "win.about": None,
     "win.wallpaperdiag": None,     # 只是把诊断文本摊进一个可复制的窗口
     "win.closebehavior": "ask",
+    "win.infocompact": None,       # 只改信息卡怎么画
+    "win.ribbon": None,
+    "win.framerate": "60",         # 只改帧率上限（探针里还会真的验一次）
 }
 
 # 不激活的：要么会动用户的桌面，要么会联网装东西、开浏览器、结束进程。
@@ -276,6 +280,72 @@ def main() -> int:
             results["tray_activate"] = f"{type(exc).__name__}: {exc}"
         if results["tray_activate"] != "ok":
             problems.append(f"托盘 Activate：{results['tray_activate']}")
+
+        # 7b) 信息卡：离屏画一帧，上面能点的每一块都得在，点了要真有效果
+        import cairo as _cairo
+        win.set_toggle("infocompact", False)     # 先按"展开"的样子验（上一节可能翻过它）
+        surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, 1000, 640)
+        cr = _cairo.Context(surf)
+        sc = win._current_scene()
+        win._refresh_ribbon(sc)
+        win.painter.draw(cr, 1000, 640, sc, 180.0)
+        results["ribbon_info_len"] = len(win.painter.ui.ribbon_info)
+        if len(win.painter.ui.ribbon_info) != len(win.painter.ui.ribbon):
+            problems.append("长卷的天气注脚与格子数对不上（悬停时会指错）")
+        rects = list(win.painter.ui.info_rects)
+        kinds = [r[4] for r in rects]
+        results["info_rows"] = len(win.painter.ui.info_rows)
+        results["info_kinds"] = kinds
+        for need in ("toggle", "refresh"):
+            if need not in kinds:
+                problems.append(f"信息卡上没有 {need} 这一块")
+        if "arc" not in kinds:
+            problems.append("信息卡上没有画出日弧")
+        opens = [r for r in rects if r[4] == "open" and r[5] is not None]
+        if not opens:
+            problems.append("信息卡上没有可以点着跳过去的时刻")
+        else:                       # 点最早那一行（日出）应当停在它那一刻
+            row = opens[0]
+            win._set_preview(None)
+            win.info.activate(rects.index(row), row[0] + 2.0)
+            results["info_preview"] = str(win.painter.ui.preview_dt)
+            if win.painter.ui.preview_dt is None:
+                problems.append("点信息卡里的一行没有进入预览")
+        if "arc" in kinds:          # 点日弧中点应当落在白天里
+            arc = next(r for r in rects if r[4] == "arc")
+            win._set_preview(None)
+            win.info.activate(rects.index(arc), arc[0] + arc[2] / 2)
+            mid = win.painter.ui.preview_dt
+            rise, sett = sc.events.get("sunrise"), sc.events.get("sunset")
+            results["info_arc_mid"] = str(mid)
+            if not (rise and sett and mid and rise < mid < sett):
+                problems.append(f"点日弧中间没落在日出与日落之间：{mid}")
+        win._set_preview(None)
+        win.set_toggle("infocompact", True)
+        results["info_compact"] = bool(win.painter.ui.info_compact
+                                       and win.config.info_compact)
+        win.set_toggle("infocompact", False)
+        if not results["info_compact"]:
+            problems.append("信息卡的精简模式没有生效")
+        # 精简模式只留时间和那句话：不该再有"行"和日弧
+        win.set_toggle("infocompact", True)
+        win.painter.draw(cr, 1000, 640, sc, 180.0)
+        slim = [r[4] for r in win.painter.ui.info_rects]
+        win.set_toggle("infocompact", False)
+        results["info_compact_kinds"] = slim
+        if any(k in ("open", "arc", "detail") for k in slim):
+            problems.append(f"精简模式下还画了事实行：{slim}")
+
+        # 7c) 帧率可调：选一个就得记下来，而且立刻按新节奏走
+        win.activate("framerate", GLib.Variant.new_string("120"))
+        results["framerate_120"] = win.config.frame_rate
+        if win.config.frame_rate != 120:
+            problems.append("画面流畅度没有写进配置")
+        if not 0 < win.frames.interval() <= 1.0:
+            problems.append(f"帧间隔不合理：{win.frames.interval()}")
+        win.activate("framerate", GLib.Variant.new_string("60"))
+        if win.config.frame_rate != 60:
+            problems.append("画面流畅度改回 60 失败")
 
         # 8) 五个自绘对话框都得能建出来（GTK4.6 上没有 Adw 的新控件）
         try:

@@ -62,6 +62,25 @@ class TestSanitize(unittest.TestCase):
         cfg.sanitize()
         self.assertFalse(cfg.wallpaper_dynamic)
 
+    def test_frame_rate_must_be_one_of_the_presets(self):
+        """帧率是可调的，但只认菜单里给的那几档；坏值一律回到默认。"""
+        self.assertEqual(C.Config().frame_rate, C.DEFAULT_FRAME_RATE)
+        for bad in ("60", None, 0, 77, -1, 3.5):
+            cfg = C.Config(frame_rate=bad)
+            cfg.sanitize()
+            self.assertEqual(cfg.frame_rate, C.DEFAULT_FRAME_RATE,
+                             f"{bad!r} 应该被纠成默认帧率")
+        for good in C.FRAME_RATES:
+            cfg = C.Config(frame_rate=good)
+            cfg.sanitize()
+            self.assertEqual(cfg.frame_rate, good)
+
+    def test_frame_rate_is_a_plain_int_after_sanitize(self):
+        cfg = C.Config(frame_rate="120")
+        cfg.sanitize()
+        self.assertIsInstance(cfg.frame_rate, int)
+        self.assertEqual(cfg.frame_rate, 120)
+
     def test_new_options_field_defaults_empty(self):
         """1.1.8 加的字段：老配置里没有它，读出来必须是空串而不是崩。"""
         self.assertEqual(C.Config().prev_wallpaper_options, "")

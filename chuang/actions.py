@@ -69,7 +69,18 @@ def build_menu(win) -> Gio.Menu:
         look = Gio.Menu()
         look.append("窗口置顶", "win.pin")
         look.append("显示此刻的事实（空格）", "win.info")
+        look.append("信息卡精简模式（C）", "win.infocompact")
+        look.append("显示今日天色长卷", "win.ribbon")
         look.append("跳到某天某时…", "win.gotodatetime")
+        # 画面流畅度：终端性能差得远，让它自己选（见 config.FRAME_RATES）
+        smooth = Gio.Menu()
+        for label, target in (("省电 · 24 帧", "24"), ("流畅 · 30 帧", "30"),
+                              ("均衡 · 45 帧", "45"), ("顺滑 · 60 帧（默认）", "60"),
+                              ("高刷 · 120 帧", "120")):
+            item = Gio.MenuItem.new(label, "win.framerate")
+            item.set_attribute_value("target", GLib.Variant("s", target))
+            smooth.append_item(item)
+        look.append_submenu("画面流畅度", smooth)
         menu.append_submenu("看", look)
 
         # 四、开机与关窗：三个"待着的方式"收在一起
@@ -175,7 +186,9 @@ def register_actions(win) -> None:
 
     add_toggle("pin", win.config.always_on_top, win._act_pin)
     add_toggle("weather", win.config.mirror_weather, win._act_weather)
-    add_toggle("info", win.painter.ui.show_info, win._act_info)
+    add_toggle("info", win.painter.ui.show_info, win.info.act_show)
+    add_toggle("infocompact", win.config.info_compact, win.info.act_compact)
+    add_toggle("ribbon", win.config.show_ribbon, win._act_ribbon)
     add_toggle("autostart", win.config.autostart, win._act_autostart)
     add_toggle("autostarthidden", win.config.autostart_hidden,
                win._act_autostart_hidden)
@@ -189,6 +202,7 @@ def register_actions(win) -> None:
     add_radio("closebehavior", win.config.close_behavior, win._act_close_behavior)
     add_radio("wallpaperinterval", str(win.config.wallpaper_interval),
               win.wallpaper.act_interval)
+    add_radio("framerate", str(win.config.frame_rate), win.frames.act_rate)
 
     quit_action = Gio.SimpleAction.new("quit", None)
     quit_action.connect("activate", lambda *_: app.quit())
