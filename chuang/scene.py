@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 import math
-import random
 from dataclasses import dataclass, field
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -103,10 +102,13 @@ class Scene:
         a = self.sun_alt
         if a > 12:
             return "白天"
-        if a > 4:
+        if a > 6:                      # 6° 是天文那套"金色时刻结束"的高度
             return "斜阳"
-        if a > -0.9:
-            return "金色时刻" if a > -0.9 else "日落"
+        if a > 0:
+            return "金色时刻"
+        # -0.833° 是"太阳正好压在地平线上"（含大气折射），再往下就算落下了
+        if a > -2.5:
+            return "日落"
         if a > -6:
             return "暮色"
         if a > -18:
@@ -259,37 +261,6 @@ def skyline_seed(name: str, lat: float, lon: float) -> int:
         h ^= ord(ch)
         h = (h * 16777619) & 0xFFFFFFFF
     return h
-
-
-def skyline_layers(seed: int, count_far: int = 26, count_near: int = 34):
-    """返回 (远景山脊, 近景屋顶) 两层剪影的多边形定义（归一化坐标）。"""
-    rnd = random.Random(seed)
-    far = []
-    x = -0.05
-    h = 0.055
-    while x < 1.05:
-        w = rnd.uniform(0.05, 0.14)
-        h = max(0.02, min(0.085, h + rnd.uniform(-0.02, 0.02)))
-        far.append((x, h, w))
-        x += w * rnd.uniform(0.75, 1.15)
-
-    near = []
-    x = -0.04
-    while x < 1.04:
-        w = rnd.uniform(0.018, 0.075)
-        bh = rnd.uniform(0.012, 0.115)
-        if rnd.random() < 0.16:
-            bh *= rnd.uniform(1.4, 2.1)
-        antenna = rnd.random() < 0.22
-        lit = rnd.random()
-        near.append({
-            "x": x, "w": w, "h": bh, "antenna": antenna, "seed": rnd.random(),
-            "lit": lit < 0.75,
-            "grid": (max(1, int(w * 260)), max(1, int(bh * 190))),
-            "rnd": rnd.random(),
-        })
-        x += w * rnd.uniform(0.85, 1.1)
-    return far, near
 
 
 # --------------------------------------------------------------------------

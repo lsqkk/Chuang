@@ -13,10 +13,10 @@ gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
 from gi.repository import Pango, PangoCairo  # noqa: E402
 
-from . import astronomy as A
 from .palette import mix, mix_rgb, shade
 from .scene import (Scene, compass, duration_zh, human_hint, phase_name_simple,
-                    skyline_layers, skyline_seed)
+                    skyline_seed)
+from . import city as _city
 from . import street
 
 TAU = math.pi * 2
@@ -25,7 +25,11 @@ TAU = math.pi * 2
 HORIZON_Y = 0.795
 GROUND_Y = 0.872
 SILL_Y = 0.855
+SILL_TOP = 0.871          # 窗台面：窗框下框之下的那条台面（植物站在这里）
 RIBBON_Y = 0.940
+# 地面：楼根那条远侧人行道 → 马路 → 近侧人行道（行人在上面走）
+GROUND_TOP = 0.800
+ROAD_BOTTOM = 0.842
 ALT_TOP = 88.0
 ALT_GROUND = -9.0
 
@@ -376,6 +380,10 @@ class SkyPainter:
         self._overlay_key = None
         self._sky_surf: cairo.ImageSurface | None = None
         self._sky_key = None
+        self._city_surf: cairo.ImageSurface | None = None
+        self._city_key = None
+        self._sill_surf: cairo.ImageSurface | None = None
+        self._sill_key = None
         self._layout_cache: dict = {}
         self._street_roster: list | None = None
         # 由窗口注入"现在几点"的回调，让街上的人车按真实时间连续移动
@@ -396,7 +404,6 @@ class SkyPainter:
         self.fx.sync(scene, now)
         self.fx.advance(dt, scene, now, w, h)
 
-        mu = scene.mood
         sun_x, sun_d = x_for_az(scene.sun_az, az0, fov, w)
         glow_x = clamp(sun_x, -0.35 * w, 1.35 * w)
         sun_y = y_for_alt(max(scene.sun_alt, -3.0), h)
@@ -408,8 +415,10 @@ class SkyPainter:
         self._draw_moon(cr, w, h, scene, az0, fov)
         self._draw_clouds(cr, w, h, scene, az0, fov)
         self._draw_plane(cr, w, h, scene)
-        self._draw_skyline(cr, w, h, scene, az0, fov, direct)
-        self._draw_street(cr, w, h, scene)
+        light = self._light(scene, az0, direct)
+        self._draw_skyline(cr, w, h, scene, light)
+        self._draw_ground(cr, w, h, scene, az0, fov, light)
+        self._draw_street(cr, w, h, scene, light)
         self._draw_vignette(cr, w, h, scene)
         self._draw_sill(cr, w, h, scene, az0, fov, sun_x, direct)
         self._draw_precip(cr, w, h, scene)
@@ -764,7 +773,6 @@ class SkyPainter:
         night = scene.sun_alt < -2
         cr.save()
         if night:
-            colour = (1.0, 1.0, 1.0, 0.85)
             blink = (math.sin(p["blink"] * 3.0) + 1) * 0.5
             body_a = 0.22 + 0.2 * blink
             cr.set_source_rgba(0.85, 0.88, 0.95, body_a)
@@ -798,25 +806,144 @@ class SkyPainter:
     def _layers(self, scene: Scene):
         seed = skyline_seed(scene.location_name or "窗", scene.lat, scene.lon)
         if seed not in self._skyline:
-            self._skyline[seed] = skyline_layers(seed)
+            self._skyline[seed] = _city.generate(seed)
         return self._skyline[seed]
 
+    def _light(self, scene: Scene, az0: float, direct: float) -> _city.Light:
+        """把"此刻的天色"翻译成建筑与街道能用的光照参数。"""
+        mu = scene.mood
+        rel = ((scene.sun_az - az0 + 180.0) % 360.0) - 180.0
+        moon_rel = ((scene.moon_az - az0 + 180.0) % 360.0) - 180.0
+        return _city.Light(
+            ambient=self._ambient(scene),
+            direct=direct,
+            sun_alt=scene.sun_alt,
+            rel_az=rel,
+            zenith=mu.zenith,
+            horizon=mu.horizon,
+            glow=mu.glow_color,
+            night=clamp(-scene.sun_alt / 10.0, 0.0, 1.0),
+            moon=clamp(scene.moon_light, 0.0, 1.0),
+            moon_rel_az=moon_rel if scene.moon_alt > 0 else 0.0,
+            lit_frac=self._lit_fraction(scene),
+        )
+
     def _colors(self, scene: Scene):
-        """远景山脊与近景屋顶的剪影颜色。"""
+        """近景剪影的基色（街上的人车用它来配色调）。"""
         mu = scene.mood
         amb = self._ambient(scene)
-        far_col = mix(mu.horizon, (7, 8, 14), 0.86)
-        far_col = tuple(c * (0.40 + 0.60 * amb) for c in far_col)
-        near_col = mix(mu.horizon, (4, 5, 9), 0.97)
-        near_col = tuple(c * (0.26 + 0.52 * amb) for c in near_col)
-        return far_col, near_col
+        near_col = mix(mu.horizon, (14, 16, 24), 0.90)
+        near_col = tuple(c * (0.34 + 0.58 * amb) for c in near_col)
+        return near_col
 
-    def _draw_street(self, cr, w, h, scene: Scene):
+    # ------------------------------------------------------------------
+    # 地面：楼前的人行道、马路、建筑投在路面上的影子
+    # ------------------------------------------------------------------
+    def _draw_ground(self, cr, w, h, scene: Scene, az0, fov, light) -> None:
+        """把楼底下那条路面画出来：远人行道 → 马路 → 近人行道。"""
+        layers = self._layers(scene)
+        mu = scene.mood
+        amb = clamp(light.ambient, 0.0, 1.0)
+        y_kerb_far = GROUND_TOP * h
+        y_road_top = (GROUND_TOP + 0.006) * h
+        y_road_bot = ROAD_BOTTOM * h
+        y_kerb_near = SILL_Y * h
+        horizon01 = tuple(c / 255 for c in mu.horizon)
+
+        # 路面：整体是被天光点亮的中性灰，夜里退成很暗的蓝灰
+        road_day = mix_rgb((0.23, 0.23, 0.235), horizon01, 0.20)
+        road_night = mix_rgb((0.045, 0.048, 0.062), horizon01, 0.32)
+        road = mix_rgb(road_night, road_day, amb ** 1.35)
+        g = cairo.LinearGradient(0, y_road_top, 0, y_kerb_near)
+        g.add_color_stop_rgb(0, *[c * 1.14 for c in road])
+        g.add_color_stop_rgb(0.5, *road)
+        g.add_color_stop_rgb(1, *[c * 0.86 for c in road])
+        cr.set_source(g)
+        cr.rectangle(0, y_road_top, w, y_kerb_near - y_road_top)
+        cr.fill()
+
+        # 阳光斜着铺在路面上：太阳那一侧更暖更亮
+        if light.direct > 0.02:
+            sun_x = x_for_az(scene.sun_az, az0, fov, w)[0]
+            cx = clamp(sun_x, -0.4 * w, 1.4 * w)
+            rg = cairo.RadialGradient(cx, y_road_top, 0, cx, y_road_top,
+                                      max(w * 0.75, h * 0.5))
+            gc = mu.glow_color
+            a = 0.11 * light.direct
+            rg.add_color_stop_rgba(0, gc[0] / 255, gc[1] / 255, gc[2] / 255, a)
+            rg.add_color_stop_rgba(0.55, gc[0] / 255, gc[1] / 255, gc[2] / 255, a * 0.35)
+            rg.add_color_stop_rgba(1, gc[0] / 255, gc[1] / 255, gc[2] / 255, 0)
+            cr.save()
+            cr.set_operator(cairo.OPERATOR_ADD)
+            cr.set_source(rg)
+            cr.rectangle(0, y_road_top, w, y_kerb_near - y_road_top)
+            cr.fill()
+            cr.restore()
+
+        # 建筑投在路面上的影子（太阳低就长、云厚就淡）
+        ground_shadow_h = y_kerb_near - y_road_top
+        _city.ground_shadow(cr, w, h, layers, light, y_road_top, ground_shadow_h)
+
+        # 马路靠近楼的那一条暗（楼把光挡住了）
+        ao = cairo.LinearGradient(0, y_road_top, 0, y_road_top + h * 0.016)
+        ao.add_color_stop_rgba(0, 0, 0, 0, 0.34 + 0.14 * amb)
+        ao.add_color_stop_rgba(1, 0, 0, 0, 0)
+        cr.set_source(ao)
+        cr.rectangle(0, y_road_top, w, h * 0.016)
+        cr.fill()
+
+        # 远侧人行道（楼根那一小条，被天光照得比路面亮）
+        kerb_day = mix_rgb((0.36, 0.35, 0.34), horizon01, 0.28)
+        kerb_night = mix_rgb((0.075, 0.080, 0.098), horizon01, 0.38)
+        kerb = mix_rgb(kerb_night, kerb_day, amb ** 1.3)
+        cr.set_source_rgb(*[clamp(c, 0, 1) for c in kerb])
+        cr.rectangle(0, y_kerb_far, w, y_road_top - y_kerb_far)
+        cr.fill()
+        cr.set_source_rgba(0, 0, 0, 0.28)
+        cr.rectangle(0, y_road_top - max(1.0, h * 0.0015), w, max(1.0, h * 0.0015))
+        cr.fill()
+
+        # 近侧人行道（窗下这一条，行人在上面走）
+        kerb2 = shade(kerb, 1.10)
+        cr.set_source_rgb(*[clamp(c, 0, 1) for c in kerb2])
+        cr.rectangle(0, y_road_bot, w, y_kerb_near - y_road_bot)
+        cr.fill()
+        cr.set_source_rgba(1, 1, 1, 0.10 + 0.10 * amb)
+        cr.rectangle(0, y_road_bot, w, max(1.0, h * 0.0016))
+        cr.fill()
+        cr.set_source_rgba(0, 0, 0, 0.20)
+        cr.rectangle(0, y_road_bot + max(1.0, h * 0.0016), w, max(1.0, h * 0.0016))
+        cr.fill()
+
+        # 车道中心那一点点标线：只在光够的时候露出来
+        if amb > 0.25:
+            y_mid = (y_road_top + y_road_bot) / 2
+            dash = max(6.0, w * 0.012)
+            x = -dash
+            cr.set_source_rgba(1.0, 0.96, 0.86, 0.10 + 0.16 * amb)
+            while x < w:
+                cr.rectangle(x, y_mid, dash * 0.55, max(1.0, h * 0.0016))
+                x += dash * 2.1
+            cr.fill()
+
+        # 雨天的路面反光
+        if scene.has_weather and scene.precip_kind == "rain" and scene.precip_strength > 0.15:
+            wet = cairo.LinearGradient(0, y_road_top, 0, y_kerb_near)
+            tone = mix(mu.horizon, (255, 255, 255), 0.2)
+            wet.add_color_stop_rgba(0, tone[0] / 255, tone[1] / 255, tone[2] / 255,
+                                    0.16 * scene.precip_strength)
+            wet.add_color_stop_rgba(1, tone[0] / 255, tone[1] / 255, tone[2] / 255,
+                                    0.06 * scene.precip_strength)
+            cr.set_source(wet)
+            cr.rectangle(0, y_road_top, w, y_kerb_near - y_road_top)
+            cr.fill()
+
+    def _draw_street(self, cr, w, h, scene: Scene, light):
         """地平线之下、窗台之前的那条街上的人与车。"""
         if self._street_roster is None:
             self._street_roster = street.roster(self.fx.seed * 7 + 13)
         ui = self.ui
-        _, near_col = self._colors(scene)
+        near_col = self._colors(scene)
         # 时间取"正在走动的墙钟"，而不是每分钟才重建一次的 scene.when，
         # 否则人与车会像定格一样一分钟跳一次（云是用墙钟画的，所以一直很顺）。
         # 时间旅行（预览）时以预览那一刻为起点，再加上之后真正走过的秒数：
@@ -835,9 +962,8 @@ class SkyPainter:
                     when = now
         t = (when.hour * 3600 + when.minute * 60 + when.second
              + getattr(when, "microsecond", 0) / 1e6)
-        street.draw(cr, w, h, scene, self._street_roster, t,
-                    self._ambient(scene), near_col, scene.mood.glow_color,
-                    night_lights=scene.sun_alt < 2.5)
+        street.draw(cr, w, h, scene, self._street_roster, t, light, near_col,
+                    self._layers(scene).lamps)
 
     def _lit_fraction(self, scene: Scene) -> float:
         """此刻有多少比例的窗户亮着灯。"""
@@ -852,97 +978,27 @@ class SkyPainter:
             base *= 0.78
         return base
 
-    def _draw_skyline(self, cr, w, h, scene: Scene, az0, fov, direct):
-        far, near = self._layers(scene)
+    def _draw_skyline(self, cr, w, h, scene: Scene, light) -> None:
+        layers = self._layers(scene)
         mu = scene.mood
         horizon_y = HORIZON_Y * h
-        night = clamp((-scene.sun_alt) / 10.0, 0.0, 1.0)
-
-        # 城市光晕（夜里从城市上空散出的暖色）
-        if night > 0.05:
-            glow_h = h * 0.22
-            g = cairo.LinearGradient(0, horizon_y - glow_h, 0, horizon_y + h * 0.02)
-            warm = (255, 176, 116)
-            g.add_color_stop_rgba(0, warm[0] / 255, warm[1] / 255, warm[2] / 255, 0.0)
-            g.add_color_stop_rgba(0.72, warm[0] / 255, warm[1] / 255, warm[2] / 255,
-                                  0.16 * night)
-            g.add_color_stop_rgba(1, warm[0] / 255, warm[1] / 255, warm[2] / 255,
-                                  0.30 * night)
-            cr.set_source(g)
-            cr.rectangle(0, horizon_y - glow_h, w, glow_h + h * 0.02)
-            cr.fill()
-
-        # 远山
-        far_col, near_col = self._colors(scene)
-        cr.set_source_rgb(*[c / 255 for c in far_col])
-        cr.new_path()
-        cr.move_to(-0.05 * w, horizon_y + h * 0.01)
-        pts = [(x * w, horizon_y - hv * h * 0.85) for x, hv, _ in far]
-        cr.line_to(*pts[0])
-        for i in range(1, len(pts) - 1):
-            cx, cy = pts[i]
-            mx = (cx + pts[i + 1][0]) / 2
-            my = (cy + pts[i + 1][1]) / 2
-            cr.curve_to(cx, cy, cx, cy, mx, my)
-        cr.line_to(*pts[-1])
-        cr.line_to(w * 1.05, horizon_y + h * 0.01)
-        cr.close_path()
-        cr.fill()
-
-        # 近景城市
-        lit = self._lit_fraction(scene)
-        sun_side_left = None
-        if scene.sun_alt > 1.0 and direct > 0.05:
-            d = ((scene.sun_az - az0 + 180) % 360) - 180
-            sun_side_left = d < 0
-        for b in near:
-            bx = b["x"] * w
-            bw = max(3.0, b["w"] * w)
-            bh = max(3.0, b["h"] * h)
-            by = horizon_y - bh + h * 0.008
-            cr.set_source_rgb(*[c / 255 for c in near_col])
-            cr.rectangle(bx, by, bw, bh + h * 0.02)
-            cr.fill()
-            if b["antenna"]:
-                cr.rectangle(bx + bw * 0.42, by - h * 0.022, max(1.4, bw * 0.05), h * 0.022)
-                cr.fill()
-            if sun_side_left is not None:
-                rim = cairo.LinearGradient(bx, 0, bx + bw * 0.22, 0)
-                gc = mu.glow_color
-                a = 0.20 * direct
-                if sun_side_left:
-                    rim.add_color_stop_rgba(0, gc[0] / 255, gc[1] / 255, gc[2] / 255, a)
-                    rim.add_color_stop_rgba(1, gc[0] / 255, gc[1] / 255, gc[2] / 255, 0)
-                else:
-                    rim.add_color_stop_rgba(0, gc[0] / 255, gc[1] / 255, gc[2] / 255, 0)
-                    rim.add_color_stop_rgba(1, gc[0] / 255, gc[1] / 255, gc[2] / 255, a)
-                cr.set_source(rim)
-                cr.rectangle(bx, by, bw, bh)
-                cr.fill()
-
-            if lit > 0.02 and b["lit"]:
-                cols, rows = b["grid"]
-                cols = min(cols, 9)
-                rows = min(rows, 11)
-                cw = bw / (cols + 1.4)
-                ch = bh / (rows + 1.4)
-                if cw < 1.1 or ch < 1.1:
-                    continue
-                for gy in range(rows):
-                    for gx in range(cols):
-                        hsh = ((gx * 73856093) ^ (gy * 19349663) ^ int(b["seed"] * 1e6)) % 1000 / 1000.0
-                        if hsh > lit:
-                            continue
-                        wx = bx + cw * (0.8 + gx)
-                        wy = by + ch * (0.8 + gy)
-                        bright = 0.35 + 0.55 * ((hsh * 7919) % 1.0)
-                        if hsh < 0.08:
-                            cr.set_source_rgba(0.72, 0.86, 1.0, bright * 0.8)
-                        else:
-                            cr.set_source_rgba(1.0, 0.80, 0.52, bright)
-                        cr.rectangle(wx, wy, max(1.0, cw * 0.62), max(1.0, ch * 0.5))
-                        cr.fill()
-
+        # 城市是整帧里最贵的一块（每帧上千条路径），而它只随光变化——
+        # 把光照量化成很细的档位缓存下来，太阳走过一格才重画一次。
+        key = (int(w), int(h),
+               round(light.sun_alt * 4), round(light.rel_az * 4),
+               round(light.ambient * 60), round(light.direct * 60),
+               round(light.night * 40), round(light.moon * 30),
+               round(light.lit_frac * 60))
+        if (self._city_surf is None or self._city_key != key
+                or self._city_surf.get_width() != int(w)
+                or self._city_surf.get_height() != int(h)):
+            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(w), int(h))
+            c2 = cairo.Context(surf)
+            _city.draw(c2, w, h, layers, light, horizon_y)
+            self._city_surf = surf
+            self._city_key = key
+        cr.set_source_surface(self._city_surf, 0, 0)
+        cr.paint()
         # 雾：把远处的屋顶糊掉
         if scene.fog:
             top = horizon_y - h * 0.20
@@ -1007,18 +1063,57 @@ class SkyPainter:
     # 窗台：受光、光斑、那盆小植物与它的影子
     # ------------------------------------------------------------------
     def _draw_sill(self, cr, w, h, scene: Scene, az0, fov, sun_x, direct):
+        amb = self._ambient(scene)
+        # 窗台 + 那盆植物也是静态的（只随光与太阳位置变），同样缓存。
+        key = (int(w), int(h), round(amb * 60), round(direct * 60),
+               round(sun_x / 3.0), round(scene.sun_alt * 4),
+               round(scene.sun_az * 4), round(fov))
+        if (self._sill_surf is not None and self._sill_key == key
+                and self._sill_surf.get_width() == int(w)
+                and self._sill_surf.get_height() == int(h)):
+            cr.set_source_surface(self._sill_surf, 0, 0)
+            cr.paint()
+            return
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(w), int(h))
+        c2 = cairo.Context(surf)
+        self._paint_sill(c2, w, h, scene, az0, fov, sun_x, direct)
+        self._sill_surf = surf
+        self._sill_key = key
+        cr.set_source_surface(surf, 0, 0)
+        cr.paint()
+
+    def _paint_sill(self, cr, w, h, scene: Scene, az0, fov, sun_x, direct):
         mu = scene.mood
         amb = self._ambient(scene)
         y0 = SILL_Y * h
         sh = h - y0
         horizon01 = tuple(c / 255 for c in mu.horizon)
-        day_tone = mix_rgb((0.60, 0.58, 0.55), horizon01, 0.26)
+
+        # 窗框的下框：一条横在街与窗台之间的木框，把"窗外"和"窗里"分开
+        rail_h = h * 0.012
+        frame = mix_rgb((0.20, 0.185, 0.175), horizon01, 0.16)
+        frame = shade(frame, 0.26 + 0.66 * amb)
+        day_tone = mix_rgb((0.54, 0.52, 0.49), horizon01, 0.22)
         night_tone = mix_rgb((0.045, 0.05, 0.08), horizon01, 0.40)
-        lit = mix_rgb(night_tone, day_tone, amb ** 1.5)
+        lit = mix_rgb(night_tone, day_tone, amb ** 1.7)
+        rg = cairo.LinearGradient(0, y0, 0, y0 + rail_h)
+        rg.add_color_stop_rgb(0, *[c * 1.35 for c in frame])
+        rg.add_color_stop_rgb(0.18, *[c * 1.10 for c in frame])
+        rg.add_color_stop_rgb(0.55, *frame)
+        rg.add_color_stop_rgb(1, *[c * 0.72 for c in frame])
+        cr.set_source(rg)
+        cr.rectangle(0, y0, w, rail_h)
+        cr.fill()
+        cr.set_source_rgba(0, 0, 0, 0.28)
+        cr.rectangle(0, y0 + rail_h, w, max(1.0, h * 0.0035))
+        cr.fill()
+        y0 = y0 + rail_h + max(1.0, h * 0.0035)
+        sh = h - y0
+
         g = cairo.LinearGradient(0, y0, 0, h)
-        g.add_color_stop_rgb(0, *[c * 1.06 for c in lit])
+        g.add_color_stop_rgb(0, *[c * 1.10 for c in lit])
         g.add_color_stop_rgb(0.30, *lit)
-        g.add_color_stop_rgb(1, *[c * 0.72 for c in lit])
+        g.add_color_stop_rgb(1, *[c * 0.66 for c in lit])
         cr.set_source(g)
         cr.rectangle(0, y0, w, sh)
         cr.fill()
@@ -1033,6 +1128,24 @@ class SkyPainter:
         cr.set_source_rgba(1, 1, 1, 0.04 + 0.10 * amb)
         cr.rectangle(0, y0, w, 1.2)
         cr.fill()
+
+        # 窗台是块石头：拉一点细纹与几道浅浅的石缝，免得是一整片平色
+        cr.save()
+        cr.rectangle(0, y0, w, min(sh, h * 0.09))
+        cr.clip()
+        for i in range(26):
+            frac = (i * 0.041) % 1.0
+            seed = (i * 7919) % 997 / 997.0
+            yy = y0 + min(sh, h * 0.09) * frac
+            cr.set_source_rgba(0, 0, 0, 0.03 + 0.05 * seed)
+            cr.rectangle(0, yy, w, 0.8 + 0.8 * seed)
+            cr.fill()
+        for i in range(4):
+            xx = w * ((i + 0.5) / 4.0) + (i % 2) * w * 0.03
+            cr.set_source_rgba(0, 0, 0, 0.05)
+            cr.rectangle(xx, y0, max(0.8, w * 0.0012), min(sh, h * 0.09))
+            cr.fill()
+        cr.restore()
 
         # 窗台上的光斑：太阳越低，光斑越宽越斜
         if direct > 0.02:
@@ -1075,58 +1188,142 @@ class SkyPainter:
 
         flat 不为空时整株用同一个颜色填（画影子用）。
         """
-        pot_w = 56.0 * scale
-        pot_h = 33.0 * scale
-        # 花盆
+        pot_w = 54.0 * scale
+        pot_h = 30.0 * scale
+        rim_w = pot_w * 1.14
+        rim_h = 8.0 * scale
+        top = y - pot_h
+
+        # 花盆：上宽下窄，带一圈盆沿
         cr.new_path()
-        cr.move_to(x - pot_w / 2, y - pot_h)
-        cr.line_to(x + pot_w / 2, y - pot_h)
-        cr.line_to(x + pot_w * 0.38, y)
-        cr.line_to(x - pot_w * 0.38, y)
+        cr.move_to(x - rim_w / 2, top - rim_h)
+        cr.line_to(x + rim_w / 2, top - rim_h)
+        cr.line_to(x + rim_w / 2, top)
+        cr.line_to(x + pot_w / 2, top)
+        cr.line_to(x + pot_w * 0.40, y)
+        cr.line_to(x - pot_w * 0.40, y)
+        cr.line_to(x - pot_w / 2, top)
+        cr.line_to(x - rim_w / 2, top)
         cr.close_path()
         if flat is None:
             cr.save()
             cr.clip_preserve()
-            pot = cairo.LinearGradient(x - pot_w / 2, 0, x + pot_w / 2, 0)
-            pot.add_color_stop_rgb(0, 0.30, 0.22, 0.18)
-            pot.add_color_stop_rgb(0.45, 0.47, 0.34, 0.27)
-            pot.add_color_stop_rgb(1, 0.26, 0.19, 0.16)
+            pot = cairo.LinearGradient(x - rim_w / 2, 0, x + rim_w / 2, 0)
+            pot.add_color_stop_rgb(0, 0.34, 0.25, 0.20)
+            pot.add_color_stop_rgb(0.36, 0.56, 0.42, 0.33)
+            pot.add_color_stop_rgb(0.66, 0.48, 0.35, 0.28)
+            pot.add_color_stop_rgb(1, 0.27, 0.20, 0.17)
             cr.set_source(pot)
             cr.paint()
+            # 盆沿下面的那一道暗，盆就有了厚度
+            sh = cairo.LinearGradient(0, top, 0, top + rim_h * 0.9)
+            sh.add_color_stop_rgba(0, 0, 0, 0, 0.30)
+            sh.add_color_stop_rgba(1, 0, 0, 0, 0)
+            cr.set_source(sh)
+            cr.paint()
+            # 盆身的竖向高光
+            hl = cairo.LinearGradient(x - rim_w * 0.30, 0, x - rim_w * 0.02, 0)
+            hl.add_color_stop_rgba(0, 1, 1, 1, 0)
+            hl.add_color_stop_rgba(0.6, 1, 1, 1, 0.10)
+            hl.add_color_stop_rgba(1, 1, 1, 1, 0)
+            cr.set_source(hl)
+            cr.paint()
             cr.restore()
+            # 盆沿：上面一条亮线，下面一条暗线
+            cr.set_source_rgba(1.0, 0.96, 0.90, 0.26)
+            cr.rectangle(x - rim_w / 2, top - rim_h, rim_w, max(0.8, rim_h * 0.22))
+            cr.fill()
+            cr.set_source_rgba(0, 0, 0, 0.22)
+            cr.rectangle(x - rim_w / 2, top - rim_h * 0.16, rim_w,
+                         max(0.8, rim_h * 0.18))
+            cr.fill()
+            # 盆里的土
+            soil = cairo.LinearGradient(x - rim_w / 2, 0, x + rim_w / 2, 0)
+            soil.add_color_stop_rgb(0, 0.15, 0.11, 0.09)
+            soil.add_color_stop_rgb(0.5, 0.26, 0.19, 0.14)
+            soil.add_color_stop_rgb(1, 0.13, 0.10, 0.08)
+            cr.set_source(soil)
+            cr.rectangle(x - rim_w * 0.44, top - rim_h * 0.88,
+                         rim_w * 0.88, max(1.2, rim_h * 0.34))
+            cr.fill()
+            for i, (fx, fs) in enumerate(((-0.24, 0.9), (0.04, 0.6), (0.26, 0.8))):
+                cr.set_source_rgba(0.45, 0.40, 0.34, 0.55)
+                cr.arc(x + rim_w * fx, top - rim_h * 0.68,
+                       max(0.5, 1.3 * scale * fs), 0, TAU)
+                cr.fill()
         else:
             cr.set_source_rgba(*flat)
             cr.fill_preserve()
-        cr.set_source_rgba(0.92, 0.88, 0.82, 0.22)
-        if flat is None:
-            cr.rectangle(x - pot_w / 2, y - pot_h, pot_w, max(1.0, pot_h * 0.09))
-            cr.fill()
 
-        # 叶子
+        # 叶丛：一根主干 + 几根分枝，叶子大小、朝向都不一样
+        base_y = top - rim_h * 0.55
         cr.save()
-        cr.translate(x, y - pot_h * 0.92)
-        # 角度以 -90°（正上方）为中心左右展开：内圈短叶先画，外圈长叶压在上面
-        for ang, L, W, tone in (
-                (-1.97, 50, 17, 0.70), (-1.19, 46, 16, 0.74),   # 内圈
-                (-2.65, 58, 19, 0.84), (-0.52, 56, 19, 0.78),    # 最外侧
-                (-2.23, 70, 23, 0.92), (-0.91, 68, 23, 0.86),
-                (-1.82, 80, 26, 1.00), (-1.33, 78, 26, 0.96),
-                (-1.57, 86, 28, 0.90)):                          # 正中最高的一片
+        cr.translate(x, base_y)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        trunk = 15.0 * scale
+        if flat is None:                       # 露出土面的那一小段主干
+            cr.set_source_rgba(*[min(1.0, c * 0.55) for c in green], 0.95)
+            cr.set_line_width(max(1.0, 3.4 * scale))
+            cr.move_to(0, 0)
+            cr.line_to(0.6 * scale, -trunk)
+            cr.stroke()
+        # (角度, 柄长, 叶长, 叶宽, 明暗, 冷暖) —— 角度 -π/2 是正上方
+        leaves = (
+            (-2.86, 26, 20, 8, 0.74, -0.5), (-0.30, 24, 19, 8, 0.72, -0.5),
+            (-2.52, 30, 26, 11, 0.82, -0.3), (-0.68, 28, 25, 10, 0.80, -0.3),
+            (-2.16, 34, 32, 15, 0.90, 0.2), (-1.02, 32, 30, 14, 0.88, 0.2),
+            (-1.86, 38, 40, 19, 0.98, 0.0), (-1.28, 36, 38, 18, 0.96, 0.0),
+            (-2.40, 22, 34, 13, 0.86, -0.2), (-0.80, 20, 32, 12, 0.84, -0.2),
+            (-1.57, 30, 30, 13, 0.92, 0.35), (-1.57, 42, 46, 20, 1.04, 0.0),
+            (-1.10, 40, 26, 16, 0.94, 0.3), (-2.04, 42, 25, 15, 0.92, 0.3),
+        )
+        for i, (ang, stem_px, L, Wd, tone, hue) in enumerate(leaves):
+            stem = stem_px * scale
             length = L * scale
-            width = W * scale
+            width = Wd * scale
+            droop = 0.16 if i % 3 == 0 else 0.05
+            leaf_col = green
+            if abs(hue) > 1e-6:
+                tgt = (0.42, 0.46, 0.20) if hue > 0 else (0.16, 0.34, 0.30)
+                leaf_col = mix_rgb(green, tgt, abs(hue) * 0.5)
+            bx = math.cos(ang) * stem
+            by = -trunk + math.sin(ang) * stem + ((i % 3) - 1) * 2.2 * scale
+            if flat is None:                     # 叶柄
+                cr.set_source_rgba(*[min(1.0, c * 0.66) for c in leaf_col], 0.95)
+                cr.set_line_width(max(0.8, 1.8 * scale))
+                cr.move_to(0, -trunk)
+                cr.line_to(bx, by)
+                cr.stroke()
             cr.save()
+            cr.translate(bx, by)
             cr.rotate(ang)
+            if flat is not None:
+                cr.set_source_rgba(*flat)
             cr.new_path()
             cr.move_to(0, 0)
-            cr.curve_to(length * 0.3, -width, length * 0.72, -width * 0.8,
-                        length, 0)
-            cr.curve_to(length * 0.72, width * 0.8, length * 0.3, width, 0, 0)
+            cr.curve_to(length * 0.26, -width * 0.64,
+                        length * 0.76, -width * 0.40,
+                        length * 0.99, droop * length * 0.9)
+            cr.curve_to(length * 0.74, width * 0.42,
+                        length * 0.26, width * 0.64, 0, 0)
             cr.close_path()
             if flat is None:
-                cr.set_source_rgba(green[0] * tone, green[1] * tone, green[2] * tone, 0.96)
+                lg = cairo.LinearGradient(0, 0, length, 0)
+                c0 = shade(leaf_col, 0.58 * tone)
+                c1 = shade(leaf_col, 1.24 * tone)
+                lg.add_color_stop_rgb(0, *[min(1.0, c) for c in c0])
+                lg.add_color_stop_rgb(0.55, *[min(1.0, c) for c in shade(leaf_col, tone)])
+                lg.add_color_stop_rgb(1, *[min(1.0, c) for c in c1])
+                cr.set_source(lg)
+                cr.fill_preserve()
+                # 叶脉
+                cr.set_source_rgba(*[min(1.0, c * 1.3) for c in leaf_col], 0.28)
+                cr.set_line_width(max(0.5, 0.9 * scale))
+                cr.move_to(length * 0.06, 0)
+                cr.line_to(length * 0.90, -droop * length * 0.7)
+                cr.stroke()
             else:
-                cr.set_source_rgba(*flat)
-            cr.fill()
+                cr.fill()
             cr.restore()
         cr.restore()
 
@@ -1135,7 +1332,7 @@ class SkyPainter:
         x = 0.115 * w
         y = 0.918 * h
         s = clamp(h / 700.0, 0.72, 1.7)
-        plant_h = 92.0 * s
+        plant_h = 104.0 * s
         d_rel = ((scene.sun_az - az0 + 180) % 360) - 180
         alt = max(scene.sun_alt, 0.6)
         shadow_len = clamp(1.0 / math.tan(math.radians(alt)), 0.0, 6.0) * plant_h
@@ -1157,10 +1354,10 @@ class SkyPainter:
             shadow_col = mix_rgb((0.09, 0.08, 0.10), tuple(c / 255 for c in mu.horizon), 0.35)
             kx = dx / plant_h
             ky = dy / plant_h
-            for k, a in ((0.96, 0.46), (1.06, 0.22), (1.18, 0.10)):
+            for k, a in ((0.96, 0.62), (1.06, 0.30), (1.18, 0.14)):
                 cr.save()
                 # 影子只落在窗台上；按"高度→地面偏移"的仿射变换把整株压到台面上
-                cr.rectangle(0, SILL_Y * h, w, h - SILL_Y * h)
+                cr.rectangle(0, SILL_TOP * h, w, h - SILL_TOP * h)
                 cr.clip()
                 cr.transform(cairo.Matrix(xx=1.0, yx=0.0, xy=-kx * k, yy=1.0 - ky * k,
                                           x0=kx * k * y, y0=ky * k * y))
@@ -1275,7 +1472,6 @@ class SkyPainter:
             return
         if ui.ribbon_surface is None:
             self._build_ribbon(ui)
-        sh = h - SILL_Y * h
         x0 = 0.035 * w
         rw = 0.93 * w
         rh = clamp(h * 0.026, 14.0, 24.0)
