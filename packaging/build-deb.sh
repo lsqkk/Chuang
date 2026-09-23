@@ -13,8 +13,8 @@ BUILD="$SRC/packaging/build"
 PKG="chuang"
 ARCH="all"
 # 可以用环境变量覆盖（打包进 Release 前建议设成自己的）
-PKG_MAINTAINER="${PKG_MAINTAINER:-chuang <noreply@example.com>}"
-PKG_HOMEPAGE="${PKG_HOMEPAGE:-https://github.com/example/chuang}"
+PKG_MAINTAINER="${PKG_MAINTAINER:-lsqkk <lsqkk@users.noreply.github.com>}"
+PKG_HOMEPAGE="${PKG_HOMEPAGE:-https://github.com/lsqkk/Chuang}"
 
 VERSION="$(python3 - "$SRC" <<'PY'
 import re, sys, pathlib
