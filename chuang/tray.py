@@ -36,6 +36,15 @@ SNI_XML = """
     <property name="AttentionIconName" type="s" access="read"/>
     <property name="AttentionIconPixmap" type="a(iiay)" access="read"/>
     <property name="AttentionMovieName" type="s" access="read"/>
+    <!-- 下面这些是 GNOME 的 AppIndicator 扩展自己"追加"进属性列表的项
+         （见扩展的 appIndicator.js: _setupProxyPropertyList）。它每次收到
+         NewIcon 之类信号都会拿这些名字来 Get；只要有一项答不上来，扩展就会
+         抛一个未捕获的 Promise 异常刷满日志。我们照单全收，答空值最省事。 -->
+    <property name="IconAccessibleDesc" type="s" access="read"/>
+    <property name="AttentionAccessibleDesc" type="s" access="read"/>
+    <property name="XAyatanaLabel" type="s" access="read"/>
+    <property name="XAyatanaLabelGuide" type="s" access="read"/>
+    <property name="XAyatanaOrderingIndex" type="u" access="read"/>
     <method name="ContextMenu">
       <arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/>
     </method>
@@ -167,17 +176,23 @@ class Tray:
         GNOME 的 AppIndicator 扩展找不到图标名时会退回像素图；
         像素图为空它会抛异常（甚至把扩展搞挂），所以这里必须给出真数据。
         """
+        from pathlib import Path
+
         out = []
+        # 装了 .deb / 源码安装时图标在这里；直接跑仓库（开发模式）时在 data/
+        candidates = [
+            Path(f"/usr/share/icons/hicolor/scalable/apps/{icon_name}.svg"),
+            Path(__file__).resolve().parent.parent / "data" / f"{icon_name}.svg",
+        ]
         try:
             import gi as _gi
             _gi.require_version("GdkPixbuf", "2.0")
             from gi.repository import GdkPixbuf
+            source = next((p for p in candidates if p.exists()), None)
+            if source is None:
+                raise FileNotFoundError(icon_name)
             for size in (32, 64):
-                path = f"/usr/share/icons/hicolor/scalable/apps/{icon_name}.svg"
-                try:
-                    pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, size, size, True)
-                except Exception:
-                    continue
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(source), size, size, True)
                 if not pb.get_has_alpha():
                     pb = pb.add_alpha(False, 0, 0, 0)
                 w, h = pb.get_width(), pb.get_height()
@@ -196,6 +211,45 @@ class Tray:
                         a = data[i + 3] if nch > 3 else 255
                         buf[o], buf[o + 1], buf[o + 2], buf[o + 3] = a, r, g, b
                 out.append((w, h, bytes(buf)))
+        except Exception:
+            pass
+        return out or Tray._fallback_pixmaps()
+
+    @staticmethod
+    def _fallback_pixmaps():
+        """连图标文件都找不到时的兜底：用 Cairo 画一个。
+
+        宁可丑，也绝不给空像素图——空像素图会让扩展抛异常，进而连累
+        用户桌面上所有托盘图标。
+        """
+        out = []
+        try:
+            import cairo
+            for size in (32, 64):
+                surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+                cr = cairo.Context(surf)
+                r = size * 0.5
+                cr.arc(r, r, r * 0.86, 0, 2 * 3.141592653589793)
+                cr.set_source_rgba(0.10, 0.13, 0.22, 0.92)
+                cr.fill_preserve()
+                cr.set_source_rgba(0.92, 0.95, 1.0, 0.95)
+                cr.set_line_width(max(1.0, size * 0.07))
+                cr.stroke()
+                cr.arc(r, r * 0.92, r * 0.34, 0, 2 * 3.141592653589793)
+                cr.set_source_rgba(0.98, 0.96, 0.86, 0.95)
+                cr.fill()
+                surf.flush()
+                # 换成网络字节序的 ARGB（和 GdkPixbuf 那条路保持一致）
+                raw = bytes(surf.get_data())
+                stride = surf.get_stride()
+                buf = bytearray(size * size * 4)
+                for y in range(size):
+                    for x in range(size):
+                        o = y * stride + x * 4
+                        d = (y * size + x) * 4
+                        b, g, rr, a = raw[o], raw[o + 1], raw[o + 2], raw[o + 3]
+                        buf[d], buf[d + 1], buf[d + 2], buf[d + 3] = a, rr, g, b
+                out.append((size, size, bytes(buf)))
         except Exception:
             pass
         return out
@@ -369,6 +423,11 @@ class Tray:
             "AttentionIconName": GLib.Variant("s", ""),
             "AttentionIconPixmap": GLib.Variant("a(iiay)", []),
             "AttentionMovieName": GLib.Variant("s", ""),
+            "IconAccessibleDesc": GLib.Variant("s", ""),
+            "AttentionAccessibleDesc": GLib.Variant("s", ""),
+            "XAyatanaLabel": GLib.Variant("s", ""),
+            "XAyatanaLabelGuide": GLib.Variant("s", ""),
+            "XAyatanaOrderingIndex": GLib.Variant("u", 0),
             "ItemIsMenu": GLib.Variant("b", False),
             "Menu": GLib.Variant("o", MENU_PATH),
         }

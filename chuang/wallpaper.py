@@ -26,6 +26,23 @@ DAY_XML = CACHE / "sky-day.xml"
 TRANSITION_S = 30.0        # 帧间过渡秒数（静态时长 = 一天/帧数 - 过渡）
 
 
+def slot_uri(index: int) -> str:
+    return "file://" + quote(str(SLOTS[index]))
+
+
+def is_our_uri(uri: str) -> bool:
+    """这个 URI 是不是我们自己画出来的（壁纸槽位或动态壁纸 XML）。"""
+    if not uri:
+        return False
+    from urllib.parse import unquote
+    path = unquote(uri[len("file://"):]) if uri.startswith("file://") else uri
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return False
+    return resolved in {p.resolve() for p in (*SLOTS, DAY_XML)}
+
+
 def screen_size() -> tuple[int, int]:
     """当前主显示器的分辨率；拿不到就退回 1920×1080。"""
     try:
@@ -77,6 +94,26 @@ def current_uris() -> tuple[str, str]:
                            capture_output=True, text=True)
         out.append(r.stdout.strip().strip("'") if r.returncode == 0 else "")
     return out[0], out[1]
+
+
+def shown_uri() -> str:
+    """桌面此刻真正显示的那张壁纸。
+
+    GNOME 在深色模式下用的是 picture-uri-dark，浅色模式下用 picture-uri；
+    只盯着其中一个会误判"现在挂着的是哪张"，进而把新图写进正在显示的那个
+    文件里——URI 没变，GNOME 不会重读，桌面就停在一张旧图上。
+    """
+    light, dark = current_uris()
+    if not dark or dark == light:
+        return light
+    gsettings = shutil.which("gsettings")
+    scheme = ""
+    if gsettings:
+        r = subprocess.run([gsettings, "get", "org.gnome.desktop.interface",
+                            "color-scheme"], capture_output=True, text=True)
+        if r.returncode == 0:
+            scheme = r.stdout.strip().strip("'")
+    return dark if "dark" in scheme else light
 
 
 def set_wallpaper(path: Path) -> tuple[bool, str]:
@@ -214,11 +251,12 @@ class Worker:
                     self.painter.ui.ribbon_surface = None
                 scene = self.engine.build(when, weather, preview=False,
                                           location_label=self.label)
-                # 注意：这里不能给 slot 赋值，否则它就成了局部变量（闭包捕获不到）
-                new_slot, path = next_slot(slot)
+                # 槽位由主线程决定（它知道桌面此刻显示的是哪一张），这里只负责画
+                # 注意：不能在这里给 slot 赋值，否则它就成了局部变量（闭包捕获不到）
+                path = SLOTS[slot]
                 render(path, self.painter, scene, self._az0(), size)
                 ok, msg = set_wallpaper(path)
-                GLib.idle_add(done, ok, msg, new_slot)
+                GLib.idle_add(done, ok, msg, slot)
             except Exception as exc:
                 GLib.idle_add(done, False, f"渲染壁纸失败：{exc}", slot)
             finally:
@@ -237,6 +275,13 @@ class Worker:
         def work():
             from gi.repository import GLib
             try:
+                # 先清掉上一次的帧文件：它们有几十 MB，而且重新生成后旧帧
+                # 只会让 GNOME 的 XML 指向混在一起的新旧两张图
+                for old in FRAME_DIR.glob("frame-*.png"):
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
                 self.painter.ui.show_info = show_info
                 self.painter.ui.show_ribbon = show_ribbon
                 if show_ribbon:
@@ -266,9 +311,20 @@ class Worker:
         threading.Thread(target=work, daemon=True, name="chuang-wallpaper-day").start()
 
 
-def next_slot(slot: int) -> tuple[int, Path]:
-    slot = 1 - (slot % 2)
-    return slot, SLOTS[slot]
+def next_slot(current_uri: str, last_slot: int) -> tuple[int, Path]:
+    """下一个要写的槽位。
+
+    以"桌面此刻真正显示的是哪一张"为准：只有写到另一张，URI 才会真的变化，
+    GNOME 才会重新读文件。如果桌面挂的压根不是我们的图（用户自己换了壁纸、
+    或挂着动态壁纸 XML），就退回按上次用的槽位交替。
+    """
+    current = -1
+    for i in range(len(SLOTS)):
+        if current_uri == slot_uri(i):
+            current = i
+            break
+    index = (1 - current) if current >= 0 else (1 - (int(last_slot or 0) % 2))
+    return index, SLOTS[index]
 
 
 def set_wallpaper(path: Path) -> tuple[bool, str]:

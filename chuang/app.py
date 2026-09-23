@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 import threading
 import time as _time
 import urllib.request
@@ -22,8 +24,10 @@ from . import update as upmod
 from . import tray as traymod
 from .weather import WeatherService, geocode
 
-# 静态壁纸跟随此刻的间隔（秒）
+# 默认的壁纸跟随间隔（秒）；用户可在菜单里改成 30 秒 / 1 分钟
 WALLPAPER_INTERVAL = 10
+# 单实例锁：同一时刻只允许一个「窗」在写壁纸，避免两个进程互相覆盖
+INSTANCE_LOCK = Path.home() / ".cache" / "chuang" / "instance.lock"
 
 CSS = """
 window.chuang, .chuang-bg { background: #05070d; }
@@ -44,7 +48,8 @@ class CloseDialog(Gtk.Window):
     """第一次关窗时问一句：留在托盘，还是直接退出。（GTK4 4.6 没有
     MessageDialog.set_extra_child，所以自己搭一个。）"""
 
-    def __init__(self, parent, tray_available: bool, on_choice):
+    def __init__(self, parent, tray_available: bool, on_choice,
+                 wallpaper_auto: bool = False):
         super().__init__(transient_for=parent, modal=True, resizable=False,
                          title="关掉「窗」吗？")
         self.on_choice = on_choice
@@ -55,6 +60,9 @@ class CloseDialog(Gtk.Window):
         box.append(title)
         hint = ("留在托盘里的话，它还会继续把壁纸跟着天空更新；"
                 "托盘图标点一下就能再打开。")
+        if wallpaper_auto:
+            hint = ("你的桌面壁纸正跟着此刻更新。留在托盘里它才会一直更新；"
+                    "直接退出的话，壁纸会停在现在这一刻。托盘图标点一下就能再打开。")
         if not tray_available:
             hint = "这台机器的系统托盘不可用（需要 GNOME 的 AppIndicator 扩展），只能直接退出。"
         sub = Gtk.Label(label=hint, xalign=0, wrap=True, max_width_chars=38)
@@ -68,7 +76,7 @@ class CloseDialog(Gtk.Window):
         self.tray_button.add_css_class("suggested-action")
         self.tray_button.set_sensitive(tray_available)
         self.tray_button.connect("clicked", self._pick, "tray")
-        quit_button = Gtk.Button(label="直接退出")
+        quit_button = Gtk.Button(label="直接退出（壁纸会停住）" if wallpaper_auto else "直接退出")
         quit_button.connect("clicked", self._pick, "quit")
         row.append(quit_button)
         row.append(self.tray_button)
@@ -225,6 +233,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.available_release = None
         self._checking_update = False
         self._really_quit = False
+        self._toggle_handlers = {}          # 勾选项名字 → 真正的处理器（便于"设为"某状态）
         self._pin_ok = self._init_pin()
         # 调试钩子：CHUANG_TIME=2026-09-23T18:40 / CHUANG_WEATHER=63:95:9:180
         self._fake_time = self._parse_fake_time()
@@ -254,11 +263,12 @@ class ChuangWindow(Adw.ApplicationWindow):
                                       self.config.location.timezone)
 
         self._next_draw = 0.0
-        self._next_wallpaper = _time.monotonic() + 60
+        # 壁纸立刻来一次：开机后桌面还挂着"上次关机那一刻"的图，
+        # 越早换掉越好（以前要等 2.5 秒，而且只有一次机会）。
+        self._next_wallpaper = _time.monotonic() + 0.4
+        self._last_clock = self._now()
         self._timer = GLib.timeout_add(25, self._tick)
         self.connect("close-request", self._on_close)
-        if self.config.wallpaper_auto:
-            GLib.timeout_add(2500, self._refresh_wallpaper_once)
         if self.config.update_check:
             GLib.timeout_add(9000, self._maybe_auto_check)
         self.first_run_tips()
@@ -432,8 +442,14 @@ class ChuangWindow(Adw.ApplicationWindow):
         return True
 
     def _build_menu(self) -> Gio.Menu:
+        """菜单：顶层只留"一眼能看懂"的几件事，其余按用途收进子菜单。
+
+        以前的顶层有十几行（含一组三个单选），太长；现在顶层固定 6 行：
+        换一扇窗 / 跟随天气 / 桌面壁纸 ▸ / 看 ▸ / 开机与关窗 ▸ / 关于与帮助 ▸ / 退出。
+        """
         menu = Gio.Menu()
-        # 零、有新版本时置顶提示
+
+        # 有新版本时置顶提示
         if self.available_release is not None:
             rel = self.available_release
             up = Gio.Menu()
@@ -443,23 +459,23 @@ class ChuangWindow(Adw.ApplicationWindow):
             up.append("跳过这个版本", "win.skipversion")
             menu.append_submenu(f"有新版本 {rel.tag} · 查看", up)
 
-        # 一、看（当前这扇窗本身）
-        sec_view = Gio.Menu()
-        sec_view.append("沉浸全屏", "win.fullscreen")
-        sec_view.append("窗口置顶", "win.pin")
-        sec_view.append("显示此刻的事实", "win.info")
-        menu.append_section(None, sec_view)
+        # 一、最常用的两件事：看哪片天、点开全屏
+        primary = Gio.Menu()
+        primary.append("换一扇窗（城市）…", "win.city")
+        primary.append("跟随真实天气", "win.weather")
+        primary.append("沉浸全屏", "win.fullscreen")
+        menu.append_section(None, primary)
 
-        # 二、换（看哪片天）
-        sec_place = Gio.Menu()
-        sec_place.append("换一扇窗（城市）…", "win.city")
-        sec_place.append("跟随真实天气", "win.weather")
-        menu.append_section(None, sec_place)
-
-        # 三、桌面壁纸（子菜单）
+        # 二、桌面壁纸（"放到桌面上"的所有开关）
         wall = Gio.Menu()
         wall.append("把此刻的天空设为壁纸（一张）", "win.wallpaper")
-        wall.append("壁纸跟随此刻（每 10 秒换一张）", "win.wallpaperauto")
+        wall.append("壁纸跟随此刻（定时换一张）", "win.wallpaperauto")
+        w2 = Gio.Menu()
+        for label, target in (("每 10 秒", "10"), ("每 30 秒", "30"), ("每 1 分钟", "60")):
+            item = Gio.MenuItem.new(label, "win.wallpaperinterval")
+            item.set_attribute_value("target", GLib.Variant("s", target))
+            w2.append_item(item)
+        wall.append_submenu("壁纸跟随的节奏", w2)
         wall.append("生成离线动态壁纸（15 分钟一帧，关掉也有效）", "win.wallpaperday")
         w3 = Gio.Menu()
         w3.append("壁纸上显示「此刻的事实」", "win.wallpaperinfo")
@@ -468,23 +484,36 @@ class ChuangWindow(Adw.ApplicationWindow):
         wall.append_section(None, w3)
         menu.append_submenu("桌面壁纸", wall)
 
-        # 四、这扇窗怎么待着
-        sec_behave = Gio.Menu()
-        sec_behave.append("开机时自动打开", "win.autostart")
+        # 三、看：这扇窗自己长什么样
+        look = Gio.Menu()
+        look.append("窗口置顶", "win.pin")
+        look.append("显示此刻的事实（空格）", "win.info")
+        menu.append_submenu("看", look)
+
+        # 四、开机与关窗：三个"待着的方式"收在一起
+        behave = Gio.Menu()
+        behave.append("开机时自动打开", "win.autostart")
+        behave.append("开机时直接进托盘（不弹窗）", "win.autostarthidden")
         for label, target in (("关窗时：问我", "ask"),
                               ("关窗时：最小化到托盘", "tray"),
                               ("关窗时：直接退出", "quit")):
             item = Gio.MenuItem.new(label, "win.closebehavior")
             item.set_attribute_value("target", GLib.Variant("s", target))
-            sec_behave.append_item(item)
-        menu.append_section(None, sec_behave)
+            behave.append_item(item)
+        menu.append_submenu("开机与关窗", behave)
 
-        sec_last = Gio.Menu()
-        sec_last.append("检查更新", "win.checkupdate")
-        sec_last.append("自动检查更新", "win.autoupdate")
-        sec_last.append("关于窗", "win.about")
-        sec_last.append("退出", "win.quit")
-        menu.append_section(None, sec_last)
+        # 五、关于与帮助
+        about = Gio.Menu()
+        about.append("检查更新", "win.checkupdate")
+        about.append("自动检查更新", "win.autoupdate")
+        about.append("问题反馈 / 提个建议（GitHub）", "win.reportissue")
+        about.append("作者的主页（GitHub）", "win.authormain")
+        about.append("关于窗", "win.about")
+        menu.append_submenu("关于与帮助", about)
+
+        quit_item = Gio.Menu()
+        quit_item.append("退出", "win.quit")
+        menu.append_section(None, quit_item)
         return menu
 
     def _build_actions(self):
@@ -519,6 +548,7 @@ class ChuangWindow(Adw.ApplicationWindow):
             action.connect("activate", on_activate)
             action.connect("change-state", on_change)
             self.add_action(action)
+            self._toggle_handlers[name] = on_set
 
         def add_radio(name, initial: str, on_set):
             action = Gio.SimpleAction.new_stateful(
@@ -550,6 +580,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         add("openreleases", self._act_open_releases)
         add("downloaddeb", self._act_download_deb)
         add("skipversion", self._act_skip_version)
+        add("reportissue", self._act_report_issue)
+        add("authormain", self._act_author_main)
         add("quit", self._act_quit)
         add("about", self._act_about)
 
@@ -557,12 +589,18 @@ class ChuangWindow(Adw.ApplicationWindow):
         add_toggle("weather", self.config.mirror_weather, self._act_weather)
         add_toggle("info", self.painter.ui.show_info, self._act_info)
         add_toggle("autostart", self.config.autostart, self._act_autostart)
+        add_toggle("autostarthidden", self.config.autostart_hidden,
+                   self._act_autostart_hidden)
         add_toggle("wallpaperauto", self.config.wallpaper_auto, self._act_wallpaper_auto)
         add_toggle("wallpaperinfo", self.config.wallpaper_show_info,
                    self._act_wallpaper_info)
         add_toggle("wallpaperribbon", self.config.wallpaper_show_ribbon,
                    self._act_wallpaper_ribbon)
+        # 这个以前漏了注册：菜单里有「自动检查更新」，点了却没有任何反应
+        add_toggle("autoupdate", self.config.update_check, self._act_auto_update)
         add_radio("closebehavior", self.config.close_behavior, self._act_close_behavior)
+        add_radio("wallpaperinterval", str(self.config.wallpaper_interval),
+                  self._act_wallpaper_interval)
 
         quit_action = Gio.SimpleAction.new("quit", None)
         quit_action.connect("activate", lambda *_: app.quit())
@@ -583,7 +621,7 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _on_pin_toggled(self, button):
         active = button.get_active()
         if active != self.action_state("pin"):
-            self.activate("pin", GLib.Variant.new_boolean(active))
+            self.set_toggle("pin", active)
 
     def action_state(self, name: str) -> bool:
         act = self.lookup_action(name)
@@ -591,6 +629,25 @@ class ChuangWindow(Adw.ApplicationWindow):
             return False
         state = act.get_state()
         return bool(state.get_boolean()) if state is not None else False
+
+    def set_toggle(self, name: str, value: bool) -> None:
+        """把勾选项"设为"某个状态（而不是"翻转"）。
+
+        勾选项的动作参数类型是 None，所以 activate(某个 Variant) 会被 GLib
+        断言挡掉、静默什么都不做（AGENTS.md 里记的那条坑）；而 set_state() 又
+        不会触发 change-state。于是这里两步都做：先改状态（菜单与托盘的勾跟着
+        变），再显式跑一遍处理器（把配置、壁纸、提示都落实）。
+        """
+        act = self.lookup_action(name)
+        if act is None:
+            return
+        state = act.get_state()
+        if state is not None and state.get_boolean() == value:
+            return
+        act.set_state(GLib.Variant.new_boolean(value))
+        handler = self._toggle_handlers.get(name)
+        if handler is not None:
+            handler(value)
 
     def _act_pin(self, want: bool):
         if want and not self._pin_ok:
@@ -630,12 +687,21 @@ class ChuangWindow(Adw.ApplicationWindow):
                 bool(self.config.wallpaper_show_ribbon))
 
     def _remember_wallpaper(self):
-        """第一次动壁纸前，把原来那张记下来，方便还原。"""
+        """第一次动壁纸前，把原来那张记下来，方便还原。
+
+        只记"别人的"壁纸：如果此刻挂着的已经是我们自己画的槽位文件，
+        就绝不能把它当成"原来的壁纸"——否则「还原成原来的壁纸」还回去的
+        是一张过期的天空，用户真正的壁纸就永久丢了。
+        """
         if self.config.prev_wallpaper:
             return
         light, dark = wallmod.current_uris()
+        if wallmod.is_our_uri(light) or not light:
+            light = ""
+        if wallmod.is_our_uri(dark) or not dark:
+            dark = light
         self.config.prev_wallpaper = light
-        self.config.prev_wallpaper_dark = dark
+        self.config.prev_wallpaper_dark = dark or light
         self.config.save()
 
     def apply_wallpaper(self, quiet: bool = False) -> None:
@@ -646,17 +712,20 @@ class ChuangWindow(Adw.ApplicationWindow):
         size = wallmod.screen_size()
         loc = self.config.location
         self.wp.location(loc.lat, loc.lon, loc.timezone, loc.label)
+        # 槽位由"桌面此刻真正显示的是哪一张"决定：这样这次一定写另一张，
+        # URI 真的变了 GNOME 才会重新读文件。只信配置里的 slot 会在进程被
+        # 杀、两个写入方并存等情况下错位，于是来回闪两张（其中一张还是旧的）。
+        slot, _ = wallmod.next_slot(wallmod.shown_uri(), self.config.wallpaper_slot)
         self.wp.render_now(self.engine.local_now(), self.weather.weather,
-                           show_info, show_ribbon, size, self.config.wallpaper_slot,
+                           show_info, show_ribbon, size, slot,
                            lambda ok, msg, slot: self._wallpaper_done(ok, msg, slot, quiet))
         if not quiet:
             self.toast("正在把这扇窗挂到桌面上…", 2.0)
 
     def _wallpaper_done(self, ok: bool, msg: str, slot: int, quiet: bool = False) -> bool:
         self.config.wallpaper_slot = slot
-        if ok:
-            self.config.save()
-        # 每 10 秒的自动跟随不弹提示，否则提示会一直挂在屏幕上
+        self.config.save()          # 记下槽位，只在"桌面挂着别人的图"时当兜底
+        # 自动跟随不弹提示，否则提示会一直挂在屏幕上
         if not quiet or not ok:
             self.toast(msg, 4.5 if ok else 6.0)
         return False
@@ -664,21 +733,32 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _act_wallpaper(self, *_):
         self.apply_wallpaper()
 
-    def _refresh_wallpaper_once(self):
-        if self.config.wallpaper_auto:
-            self.apply_wallpaper(quiet=True)
-            self._next_wallpaper = _time.monotonic() + WALLPAPER_INTERVAL
-        return False
-
     def _act_wallpaper_auto(self, want: bool):
         self.config.wallpaper_auto = want
+        if want:
+            self.config.wallpaper_dynamic = False    # 两条路互斥，别同时挂着
         self.config.save()
-        self._next_wallpaper = _time.monotonic() + WALLPAPER_INTERVAL
+        self._next_wallpaper = _time.monotonic() + self.config.wallpaper_interval
         if want:
             self.apply_wallpaper()
-            self.toast("壁纸每 10 秒跟着此刻换一张（要一直更新，记得把「窗」留在托盘里）", 6.0)
+            self.toast(f"壁纸每 {self.config.wallpaper_interval} 秒跟着此刻换一张"
+                       "（要一直更新，记得把「窗」留在托盘里）", 6.0)
         else:
             self.toast("壁纸不再自动更新，现在这张会留着", 4.0)
+
+    def _act_wallpaper_interval(self, value: str):
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            return
+        if seconds not in cfgmod.WALLPAPER_INTERVALS:
+            return
+        self.config.wallpaper_interval = seconds
+        self.config.save()
+        self._next_wallpaper = _time.monotonic() + seconds
+        text = {10: "10 秒", 30: "30 秒", 60: "1 分钟"}[seconds]
+        self.toast(f"壁纸会每 {text}跟着此刻换一张" if self.config.wallpaper_auto
+                   else f"壁纸跟随的节奏已设为 {text}")
 
     def _act_wallpaper_info(self, want: bool):
         self.config.wallpaper_show_info = want
@@ -717,9 +797,9 @@ class ChuangWindow(Adw.ApplicationWindow):
 
     def _wallpaper_day_done(self, ok: bool, msg: str) -> bool:
         if ok:
+            # 先把「跟随此刻」的勾去掉（顺带改配置、存盘），再挂上动态壁纸
+            self.set_toggle("wallpaperauto", False)
             self.config.wallpaper_dynamic = True
-            self.config.wallpaper_auto = False
-            self.activate("wallpaperauto", GLib.Variant.new_boolean(False))
             self.config.save()
             self.toast("动态壁纸做好了：今天 24 小时会自己走一遍，不开着也有效", 7.0)
         else:
@@ -727,15 +807,17 @@ class ChuangWindow(Adw.ApplicationWindow):
         return False
 
     def _act_wallpaper_restore(self, *_):
+        if not self.config.prev_wallpaper:
+            self.toast("没有记下你原来的壁纸；可以从「设置 → 外观」里挑一张", 5.0)
+            return
         ok, msg = wallmod.restore(self.config.prev_wallpaper,
                                   self.config.prev_wallpaper_dark)
         if ok:
-            self.config.wallpaper_auto = False
+            self.set_toggle("wallpaperauto", False)
             self.config.wallpaper_dynamic = False
             self.config.prev_wallpaper = ""
             self.config.prev_wallpaper_dark = ""
             self.config.save()
-            self.activate("wallpaperauto", GLib.Variant.new_boolean(False))
         self.toast(msg, 5.0)
 
     # ------------------------------------------------------------------
@@ -766,12 +848,13 @@ class ChuangWindow(Adw.ApplicationWindow):
 
     def _update_result(self, manual: bool, rel) -> bool:
         self._checking_update = False
+        if rel is None:
+            # 只在真的拿到结果时才记时间戳，否则断网一次就要等一整天才会再问
+            if manual:
+                self.toast("检查更新失败：网络或 GitHub 接口不可用，稍后会再试", 5.0)
+            return False
         self.config.last_update_check = _time.time()
         self.config.save()
-        if rel is None:
-            if manual:
-                self.toast("检查更新失败：网络或 GitHub 接口不可用", 5.0)
-            return False
         newer = upmod.is_newer(rel.version, upmod.parse_version(__version__))
         if newer and rel.tag != self.config.skipped_version:
             self.available_release = rel
@@ -807,11 +890,7 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _act_open_releases(self, *_):
         rel = self.available_release
         url = rel.url if rel is not None else upmod.RELEASES_URL
-        try:
-            Gio.AppInfo.launch_default_for_uri(url, None)
-            self.toast("已经在浏览器里打开了发布页", 4.0)
-        except Exception as exc:
-            self.toast(f"打不开浏览器，地址是 {url}", 8.0)
+        self._open_url(url, "已经在浏览器里打开了发布页")
 
     def _act_skip_version(self, *_):
         rel = self.available_release
@@ -879,7 +958,8 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _ask_close(self):
         """第一次关窗时问一次，并记住。"""
         tray_ok = bool(self.tray is not None and self.tray.available)
-        CloseDialog(self, tray_ok, self._on_close_answer).present()
+        CloseDialog(self, tray_ok, self._on_close_answer,
+                    wallpaper_auto=bool(self.config.wallpaper_auto)).present()
 
     def _on_close_answer(self, choice: str, remember: bool):
         to_tray = choice == "tray"
@@ -917,11 +997,22 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.activate(name, target)
 
     def _act_autostart(self, want: bool):
-        exe = self.app.installed_exec()
-        cfgmod.set_autostart(want, exe)
+        cfgmod.set_autostart(want, self.app.installed_exec(),
+                             hidden=bool(self.config.autostart_hidden))
         self.config.autostart = want
         self.config.save()
-        self.toast("每次开机，这扇窗都会自己打开" if want else "已取消开机自启")
+        if want:
+            self.toast("每次开机，这扇窗都会自己打开" if not self.config.autostart_hidden
+                       else "每次开机，这扇窗会自己待在托盘里")
+        else:
+            self.toast("已取消开机自启")
+
+    def _act_autostart_hidden(self, want: bool):
+        self.config.autostart_hidden = want
+        self.config.save()
+        if self.config.autostart:
+            cfgmod.set_autostart(True, self.app.installed_exec(), hidden=want)
+        self.toast("开机时直接进托盘，不弹窗" if want else "开机时正常打开窗口", 3.5)
 
     def _act_about(self, *_):
         version_text = __version__
@@ -934,8 +1025,74 @@ class ChuangWindow(Adw.ApplicationWindow):
             comments="把你头顶此刻真实的天空，搬到桌面的一扇窗里。\n\n"
                      "太阳、月亮、星星的位置由本地天文算法计算，"
                      "云、雨、雪来自 Open-Meteo 的真实天气。\n"
-                     "没有任何内容离开这台电脑。")
+                     "没有任何内容离开这台电脑。",
+            website=upmod.AUTHOR_URL,
+            website_label=f"{upmod.AUTHOR} · github.com/lsqkk",
+            authors=[f"{upmod.AUTHOR}（lsqkk）"],
+            copyright="© 2026 蓝色奇夸克",
+            license_type=Gtk.License.MIT_X11)
+        # 「有问题去这里说」的直达入口（GTK 4.6 才有的属性，取不到就算了）
+        try:
+            about.set_issue_url(upmod.ISSUES_URL)
+        except Exception:
+            pass
         about.present()
+
+    def _act_author_main(self, *_):
+        self._open_url(upmod.AUTHOR_URL, "已经在浏览器里打开了作者的主页")
+
+    def _act_report_issue(self, *_):
+        """问题反馈：直接打开仓库的"新建 issue"页，并预填环境信息。
+
+        预填的内容只有版本号和系统环境，不含位置、不含任何个人数据——
+        用户看得见、也能自己删。
+        """
+        from urllib.parse import quote, urlencode
+        title = f"[Bug] {__version__} · "
+        body = (
+            "### 发生了什么\n\n（请把这句换成你看到的现象）\n\n"
+            "### 怎么复现\n\n1. \n2. \n\n"
+            "### 环境（自动填好，可删）\n\n" + self._diagnostics() + "\n"
+        )
+        url = upmod.NEW_ISSUE_URL + "?" + urlencode(
+            {"title": title, "body": body}, quote_via=quote)
+        self._open_url(url, "已经在浏览器里打开反馈页；把上面两句写清楚就好")
+
+    def _diagnostics(self) -> str:
+        """给 issue 用的一小段环境信息（纯本地读取，不外发）。"""
+        lines = [f"- 版本：{__version__}"]
+        try:
+            lines.append(f"- GTK：{Gtk.get_major_version()}.{Gtk.get_minor_version()}."
+                         f"{Gtk.get_micro_version()}")
+        except Exception:
+            pass
+        try:
+            import gi as _gi
+            info = _gi.Repository.get_default().require("Adw", "1")
+            lines.append(f"- libadwaita：{info.get_version()}")
+        except Exception:
+            pass
+        lines.append(f"- 会话：{os.environ.get('XDG_SESSION_TYPE', '?')} / "
+                     f"{os.environ.get('XDG_CURRENT_DESKTOP', '?')}")
+        try:
+            text = Path("/etc/os-release").read_text(encoding="utf-8")
+            pretty = next((l.split("=", 1)[1].strip().strip('"')
+                           for l in text.splitlines()
+                           if l.startswith("PRETTY_NAME=")), "")
+            if pretty:
+                lines.append(f"- 系统：{pretty}")
+        except OSError:
+            pass
+        lines.append(f"- 托盘：{'可用' if (self.tray and self.tray.available) else '不可用'}"
+                     f"；壁纸跟随：{'开' if self.config.wallpaper_auto else '关'}")
+        return "\n".join(lines)
+
+    def _open_url(self, url: str, ok_msg: str) -> None:
+        try:
+            Gio.AppInfo.launch_default_for_uri(url, None)
+            self.toast(ok_msg, 4.0)
+        except Exception:
+            self.toast(f"打不开浏览器，地址是 {url}", 8.0)
 
     def _set_location(self, location: cfgmod.Location):
         self.config.location = location
@@ -946,9 +1103,15 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._ribbon_key = None
         self.painter._skyline.clear()
         self.painter.ui.preview_dt = None
+        self.painter.ui.ribbon_key = None
+        self.painter.ui.ribbon_surface = None
         self.title_widget.set_subtitle(location.label)
         self.toast(f"现在这扇窗朝着 {location.full_label or location.name}")
         self.area.queue_draw()
+        # 桌面上的那张还朝着旧城市，别等下一个周期，立刻换掉
+        if self.config.wallpaper_auto:
+            self._next_wallpaper = 0.0
+            self.apply_wallpaper(quiet=True)
 
     # ------------------------------------------------------------------
     # 场景与绘制
@@ -1000,6 +1163,16 @@ class ChuangWindow(Adw.ApplicationWindow):
         import time as _t
         now = _t.monotonic()
         clock = self._now()
+        # 睡了一觉 / 系统时间被改 / 从挂起里醒来：墙钟会跳。这时候画面和
+        # 壁纸上的"此刻"都还是旧的，立刻补一次，别等下一个周期。
+        if abs((clock - self._last_clock).total_seconds()) > 90:
+            self._last_clock = clock
+            self._scene_key = None
+            self._last_minute = -1
+            if self.config.wallpaper_auto:
+                self._next_wallpaper = 0.0
+        else:
+            self._last_clock = clock
         minute = clock.hour * 60 + clock.minute
         if minute != self._last_minute:
             self._last_minute = minute
@@ -1010,7 +1183,8 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.weather.maybe_refresh()
         # 壁纸跟随：按秒表走，不受"分钟变化"限制（收进托盘也照常更新）
         if self.config.wallpaper_auto and now >= self._next_wallpaper:
-            self._next_wallpaper = now + WALLPAPER_INTERVAL
+            step = int(self.config.wallpaper_interval or WALLPAPER_INTERVAL)
+            self._next_wallpaper = now + max(5, step)
             self.apply_wallpaper(quiet=True)
         # 画面只在窗口可见时重绘；有降水画得勤一点，安静时省电
         if self.get_visible():
@@ -1160,35 +1334,129 @@ class ChuangWindow(Adw.ApplicationWindow):
 
 
 class ChuangApp(Adw.Application):
-    def __init__(self, force_city: bool = False):
+    def __init__(self, force_city: bool = False, hidden: bool = False):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
         self.config = cfgmod.Config.load()
         if not self.config.location.name:
             self.config.location = cfgmod.guess_location()
             self.config.save()
         self.force_city = force_city
+        self.start_hidden = hidden
         if cfgmod.autostart_installed() != self.config.autostart:
             self.config.autostart = cfgmod.autostart_installed()
+        self._repair_autostart()
+        self._forget_own_wallpaper()
+
+    def _repair_autostart(self) -> None:
+        """自启项只在用户勾选的那一刻写过。之后换了安装方式（源码装→.deb 装），
+        它就会指着一条"已经不存在的命令"，而 GNOME 只是静默忽略这条自启项
+        （日志里才有一句 Exec binary ... does not exist），用户什么都看不到。
+        所以每次启动都对一遍，需要就悄悄改回来。"""
+        if not self.config.autostart:
+            return
+        exe = self.installed_exec()
+        if cfgmod.autostart_needs_repair(exe, bool(self.config.autostart_hidden)):
+            cfgmod.set_autostart(True, exe, hidden=bool(self.config.autostart_hidden))
+
+    def _forget_own_wallpaper(self) -> None:
+        """早期版本会把"我们自己画的天空"当成"用户原来的壁纸"记下来，
+        于是「还原成原来的壁纸」还原出来的是一张过期的天空。发现就清掉这条坏记录。"""
+        if not self.config.prev_wallpaper and not self.config.prev_wallpaper_dark:
+            return
+        if (wallmod.is_our_uri(self.config.prev_wallpaper)
+                or wallmod.is_our_uri(self.config.prev_wallpaper_dark)):
+            self.config.prev_wallpaper = ""
+            self.config.prev_wallpaper_dark = ""
+            self.config.save()
 
     def installed_exec(self) -> str:
-        import os
-        import sys
-        if os.path.exists("/usr/local/bin/chuang"):
-            return "/usr/local/bin/chuang"
-        exe = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                           "chuang-gui")
-        return f"{sys.executable} {exe}"
+        """这个程序"此刻真正的命令行"，写给自启项用。
+
+        优先用与当前代码同一份安装、又躺在 PATH 上的 `chuang` 命令
+        （.deb 装成 /usr/bin/chuang，源码安装装成 /usr/local/bin/chuang）；
+        都不是才退回当前这份代码自己的 chuang-gui。
+        """
+        here = Path(__file__).resolve()          # .../chuang/app.py
+        root = here.parent.parent                # /opt/chuang 或仓库根目录
+        launcher = root / "chuang-gui"
+        for cand in ("/usr/bin/chuang", "/usr/local/bin/chuang"):
+            path = Path(cand)
+            try:
+                if path.exists() and path.resolve() == launcher.resolve():
+                    return cand
+            except OSError:
+                continue
+        if launcher.exists():
+            return str(launcher)
+        return f"{sys.executable} {launcher}"
 
     def do_activate(self):
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
         win = self.props.active_window
         if win is None:
             win = ChuangWindow(self)
-        win.present()
+        tray_ok = bool(getattr(win, "tray", None) is not None and win.tray.available)
+        if self.start_hidden and tray_ok:
+            # 开机自启选了"直接进托盘"：不弹窗，只在托盘里待着
+            self.start_hidden = False
+            win.set_visible(False)
+        else:
+            # 托盘不可用的时候必须把窗开出来，否则这个进程就没法操作了
+            self.start_hidden = False
+            win.present()
         if self.force_city:
             GLib.timeout_add(500, lambda: (win._act_city(), False)[1])
 
 
-def run(argv=None) -> int:
-    app = ChuangApp()
-    return app.run(argv or [])
+def run(argv=None, force_city: bool = False) -> int:
+    if not _claim_single_instance():
+        print("「窗」已经在运行；这次只把原来那扇窗叫到了前面。", file=sys.stderr)
+        return 0
+    argv = list(argv or [])
+    hidden = "--hidden" in argv
+    if hidden:
+        argv.remove("--hidden")
+    app = ChuangApp(force_city=force_city, hidden=hidden)
+    return app.run(argv)
+
+
+def _claim_single_instance() -> bool:
+    """同一时刻只允许一个「窗」在写壁纸。
+
+    应用本身靠 D-Bus 保单例，但"两个写入方各自往 sky-a / sky-b 里交替写"
+    正是壁纸来回闪的根源之一（一张是"现在"，另一张还是上次那张旧图）。
+    这里再加一把进程间的文件锁兜底：拿不到锁就把已有实例叫到前台，然后退场。
+    """
+    import fcntl
+    deadline = _time.monotonic() + 1.5
+    while True:
+        try:
+            INSTANCE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(INSTANCE_LOCK, "w")
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # 锁跟着进程走：进程一退出内核就自动释放（锁文件留着也没关系）。
+            # 存进模块级变量，别让 handle 被回收——回收就等于解锁。
+            globals()["_INSTANCE_HANDLE"] = handle
+            return True
+        except OSError:
+            # 同一个会话里已经有一扇窗：把它叫到前台，自己退场
+            if _poke_running_instance():
+                return False
+            # 锁被"别的会话/正在退出的进程"占着：等一下再试；实在等不到就
+            # 照常启动（总比登录后什么都没有强，此时本会话里确实没有第二个）
+            if _time.monotonic() >= deadline:
+                return True
+            _time.sleep(0.15)
+
+
+def _poke_running_instance() -> bool:
+    """本会话里如果已经有「窗」在跑，就把它叫到前台。成功返回 True。"""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        path = "/" + APP_ID.replace(".", "/")
+        bus.call_sync(APP_ID, path, "org.freedesktop.Application", "Activate",
+                      GLib.Variant("(a{sv})", ({},)), None,
+                      Gio.DBusCallFlags.NONE, 1500, None)
+        return True
+    except Exception:
+        return False

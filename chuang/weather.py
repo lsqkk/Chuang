@@ -15,11 +15,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from . import __version__
+
 API = "https://api.open-meteo.com/v1/forecast"
 GEOCODE_API = "https://geocoding-api.open-meteo.com/v1/search"
 CACHE = Path.home() / ".cache" / "chuang" / "weather.json"
 REFRESH_SECONDS = 600
-UA = "Chuang/1.0 (desktop window; +local)"
+UA = f"Chuang/{__version__} (desktop window; +local)"
 
 WMO_TEXT = {
     0: "晴", 1: "大致晴朗", 2: "多云", 3: "阴",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -11,6 +12,10 @@ CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / 
 CONFIG_FILE = CONFIG_DIR / "config.json"
 AUTOSTART_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart"
 AUTOSTART_FILE = AUTOSTART_DIR / "chuang.desktop"
+
+# 壁纸跟随此刻的可选间隔（秒）
+WALLPAPER_INTERVALS = (10, 30, 60)
+CLOSE_BEHAVIORS = ("ask", "tray", "quit")
 
 
 @dataclass
@@ -42,11 +47,13 @@ class Config:
     mirror_weather: bool = True
     always_on_top: bool = False
     autostart: bool = False
+    autostart_hidden: bool = False       # 开机自启时不弹窗，直接进托盘
     close_behavior: str = "ask"          # ask / tray / quit
     update_check: bool = True            # 自动检查更新（一天一次）
     last_update_check: float = 0.0
     skipped_version: str = ""
     wallpaper_auto: bool = False
+    wallpaper_interval: int = 10         # 壁纸跟随此刻的间隔（秒）
     wallpaper_dynamic: bool = False
     wallpaper_show_info: bool = False
     wallpaper_show_ribbon: bool = False
@@ -67,21 +74,65 @@ class Config:
             raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return cfg
+        if not isinstance(raw, dict):
+            return cfg
         loc = raw.pop("location", None)
         if isinstance(loc, dict):
             known = {k: v for k, v in loc.items() if k in Location.__dataclass_fields__}
-            cfg.location = Location(**known)
+            try:
+                cfg.location = Location(**known)
+            except (TypeError, ValueError):
+                pass
         for key, value in raw.items():
             if key in cls.__dataclass_fields__:
                 setattr(cfg, key, value)
+        cfg.sanitize()
         return cfg
 
+    def sanitize(self) -> None:
+        """把外部改坏或过期的字段纠回合法值（配置是纯文本，用户和旧版本都会写它）。"""
+        try:
+            self.wallpaper_interval = int(self.wallpaper_interval)
+        except (TypeError, ValueError):
+            self.wallpaper_interval = 10
+        if self.wallpaper_interval not in WALLPAPER_INTERVALS:
+            self.wallpaper_interval = 10
+        if self.close_behavior not in CLOSE_BEHAVIORS:
+            self.close_behavior = "ask"
+        try:
+            self.wallpaper_slot = 1 if int(self.wallpaper_slot or 0) % 2 else 0
+        except (TypeError, ValueError):
+            self.wallpaper_slot = 0
+        for name in ("wallpaper_auto", "wallpaper_dynamic", "mirror_weather",
+                     "autostart", "autostart_hidden", "update_check",
+                     "always_on_top", "show_ribbon", "wallpaper_show_info",
+                     "wallpaper_show_ribbon", "first_run_done"):
+            setattr(self, name, bool(getattr(self, name, False)))
+        try:
+            self.fov = min(360.0, max(60.0, float(self.fov)))
+        except (TypeError, ValueError):
+            self.fov = 190.0
+        for name, fallback in (("window_w", 960), ("window_h", 620)):
+            try:
+                setattr(self, name, max(320, int(getattr(self, name))))
+            except (TypeError, ValueError):
+                setattr(self, name, fallback)
+        # 动态壁纸和"跟随此刻"是两条互斥的路，别让配置里同时为真
+        if self.wallpaper_auto and self.wallpaper_dynamic:
+            self.wallpaper_dynamic = False
+
     def save(self) -> None:
+        """原子写入：先写同目录的临时文件再 replace。
+
+        非原子写会在断电/被 kill 时留下半截 JSON，下次启动整份配置都会被重置。
+        """
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             data = asdict(self)
-            CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                                   encoding="utf-8")
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+            tmp = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, CONFIG_FILE)
         except OSError:
             pass
 
@@ -159,7 +210,76 @@ def autostart_installed() -> bool:
     return AUTOSTART_FILE.exists()
 
 
-def set_autostart(enabled: bool, exec_cmd: str) -> None:
+def exec_quote(path: str) -> str:
+    """按 Desktop Entry 规范给 Exec 参数加引号（路径里有空格/中文时才需要）。"""
+    if path and all(c not in path for c in ' \t\n"\'\\><~|&;$*?#()`'):
+        return path
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def autostart_exec() -> str:
+    """读回自启文件里的 Exec= 行（用于判断它是不是已经过期）。"""
+    try:
+        for line in AUTOSTART_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith("Exec="):
+                return line[5:].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _first_token(exec_line: str) -> str:
+    """取出 Exec= 里的第一个参数（可执行文件本身），认双引号包裹。"""
+    text = exec_line.lstrip()
+    if not text:
+        return ""
+    if text[0] == '"':
+        out = []
+        i = 1
+        while i < len(text):
+            ch = text[i]
+            if ch == "\\" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                break
+            out.append(ch)
+            i += 1
+        return "".join(out)
+    return text.split(None, 1)[0]
+
+
+def autostart_wanted_exec(exec_cmd: str, hidden: bool = False) -> str:
+    """自启文件里 Exec= 这一行应有的内容。"""
+    return exec_quote(exec_cmd) + (" --hidden" if hidden else "")
+
+
+def autostart_needs_repair(exec_cmd: str, hidden: bool = False) -> bool:
+    """自启文件是否存在、且指向的正是我们想运行的那个程序。"""
+    if not AUTOSTART_FILE.exists():
+        return False
+    current = autostart_exec()
+    if current != autostart_wanted_exec(exec_cmd, hidden):
+        return True
+    # 命令看着对，但它指向的那个二进制可能已经被卸载/搬走：GNOME 会静默
+    # 忽略这条自启项（只剩日志里一行 Exec binary ... does not exist）。
+    first = _first_token(current)
+    if not first:
+        return True
+    if Path(first).is_absolute():
+        return not Path(first).exists()
+    # 只是命令名（如 chuang）：交给 PATH 去找，找不到才需要重写
+    return shutil.which(first) is None
+
+
+def set_autostart(enabled: bool, exec_cmd: str, hidden: bool = False) -> None:
+    """写入 / 删除 ~/.config/autostart/chuang.desktop。
+
+    Exec 里放的必须是"这个程序此刻真正的命令行"，否则 GNOME 的
+    systemd-xdg-autostart-generator 会因为找不到可执行文件而整条忽略它
+    （日志里只会留一句 "Exec binary ... does not exist"，用户看不到任何提示）。
+    """
     try:
         if enabled:
             AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
@@ -168,10 +288,12 @@ def set_autostart(enabled: bool, exec_cmd: str) -> None:
                 "Type=Application\n"
                 "Name=窗\n"
                 "Name[en]=Chuang\n"
+                "GenericName=实时天空之窗\n"
                 "Comment=把你头顶此刻真实的天空搬到桌面\n"
-                f"Exec={exec_cmd}\n"
+                f"Exec={autostart_wanted_exec(exec_cmd, hidden)}\n"
                 "Icon=chuang\n"
                 "Terminal=false\n"
+                "StartupNotify=false\n"
                 "X-GNOME-Autostart-enabled=true\n"
                 "Categories=Utility;\n",
                 encoding="utf-8")

@@ -4,6 +4,10 @@
 不带参数即启动图形界面；另外提供两个不用开窗口的小命令：
     chuang --version        打印版本
     chuang --check-update   检查有没有新版本（给脚本用，有新版本时退出码为 10）
+
+图形界面的两个开关：
+    chuang --city           启动时直接打开「换一扇窗」
+    chuang --hidden         不弹窗，直接待在系统托盘里（开机自启用）
 """
 
 import os
@@ -36,9 +40,8 @@ if __name__ == "__main__":
     code = _headless(args)
     if code >= 0:
         sys.exit(code)
-    if "--city" in args:
-        args.remove("--city")
-        from chuang.app import ChuangApp
-        sys.exit(ChuangApp(force_city=True).run(args))
     from chuang.app import run
-    sys.exit(run(args))
+    force_city = "--city" in args
+    if force_city:
+        args.remove("--city")
+    sys.exit(run(args, force_city=force_city))

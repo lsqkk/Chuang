@@ -13,8 +13,14 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 REPO = "lsqkk/Chuang"
+REPO_URL = f"https://github.com/{REPO}"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
-RELEASES_URL = f"https://github.com/{REPO}/releases"
+RELEASES_URL = f"{REPO_URL}/releases"
+ISSUES_URL = f"{REPO_URL}/issues"
+NEW_ISSUE_URL = f"{REPO_URL}/issues/new"
+# 作者（也用在「关于窗」里，只有一个地方要改）
+AUTHOR = "蓝色奇夸克"
+AUTHOR_URL = "https://github.com/lsqkk"
 UA = "Chuang-UpdateCheck (+https://github.com/lsqkk/Chuang)"
 TIMEOUT = 8.0
 CHECK_INTERVAL = 24 * 3600          # 自动检查的间隔：一天一次
