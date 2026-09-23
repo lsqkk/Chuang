@@ -61,10 +61,10 @@
 
 ### 方式一：`.deb` 一键安装（推荐）
 
-从 [Releases](../../releases) 下载 `chuang_1.0.0_all.deb`：
+从 [Releases](../../releases) 下载最新的 `.deb`（例如 `chuang_1.1.0_all.deb`）：
 
 ```bash
-sudo dpkg -i chuang_1.0.0_all.deb
+sudo dpkg -i chuang_*_all.deb
 sudo apt-get -f install      # 万一缺依赖，补一下
 ```
 
@@ -148,12 +148,29 @@ python3-gi  python3-gi-cairo  python3-cairo  gir1.2-gtk-4.0  gir1.2-adw-1
 **城市怎么换？**
 菜单 → 换一扇窗（城市），联网搜索即可；也可以直接填经纬度（按经度取整时区）。
 
+## 检查更新
+
+菜单底部有 **检查更新** 与 **自动检查更新**（默认开启，一天最多问一次）。
+它只做一件事：向 GitHub Releases 接口问一句"最新版本号是多少"——
+不发送任何身份信息，也不会上传任何数据，随时可以关掉。
+
+发现新版本时，菜单最上方会出现入口：[打开发布页] / [下载 .deb 安装包] / [跳过这个版本]。
+「关于窗」里也会标出新版本号。命令行同样可用：
+
+```bash
+chuang --version          # 打印版本
+chuang --check-update     # 检查更新；有新版本时退出码为 10
+```
+
+网络不通时它会静默降级：自动检查不打扰你，手动检查会明确说"检查更新失败"。
+
 ## 数据与隐私
 
 - 天空：**本地计算**，不出网。
 - 天气：只把经纬度发给 [Open-Meteo](https://open-meteo.com/)（免费、无需 API Key），
   结果缓存在 `~/.cache/chuang/weather.json`；断网自动退回"纯天文模式"。
 - 位置：存在 `~/.config/chuang/config.json`，仅本机。
+- 检查更新：向 `api.github.com` 询问最新版本号（一天一次，可关闭），不带任何标识。
 - 没有账号、没有统计、没有任何上传。
 
 ## 开发

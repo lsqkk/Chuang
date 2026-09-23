@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 import threading
 import time as _time
+import urllib.request
+from pathlib import Path
 
 import gi
 
@@ -15,6 +18,7 @@ from . import APP_ID, __version__, config as cfgmod
 from .render import SkyPainter
 from .scene import SkyEngine
 from . import wallpaper as wallmod
+from . import update as upmod
 from . import tray as traymod
 from .weather import WeatherService, geocode
 
@@ -218,6 +222,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._last_minute = -1
         self.tray = None
         self.menu_model = None
+        self.available_release = None
+        self._checking_update = False
         self._really_quit = False
         self._pin_ok = self._init_pin()
         # 调试钩子：CHUANG_TIME=2026-09-23T18:40 / CHUANG_WEATHER=63:95:9:180
@@ -253,6 +259,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.connect("close-request", self._on_close)
         if self.config.wallpaper_auto:
             GLib.timeout_add(2500, self._refresh_wallpaper_once)
+        if self.config.update_check:
+            GLib.timeout_add(9000, self._maybe_auto_check)
         self.first_run_tips()
 
     # ------------------------------------------------------------------
@@ -425,6 +433,16 @@ class ChuangWindow(Adw.ApplicationWindow):
 
     def _build_menu(self) -> Gio.Menu:
         menu = Gio.Menu()
+        # 零、有新版本时置顶提示
+        if self.available_release is not None:
+            rel = self.available_release
+            up = Gio.Menu()
+            up.append("打开发布页", "win.openreleases")
+            if rel.deb_url:
+                up.append("下载 .deb 安装包", "win.downloaddeb")
+            up.append("跳过这个版本", "win.skipversion")
+            menu.append_submenu(f"有新版本 {rel.tag} · 查看", up)
+
         # 一、看（当前这扇窗本身）
         sec_view = Gio.Menu()
         sec_view.append("沉浸全屏", "win.fullscreen")
@@ -462,6 +480,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         menu.append_section(None, sec_behave)
 
         sec_last = Gio.Menu()
+        sec_last.append("检查更新", "win.checkupdate")
+        sec_last.append("自动检查更新", "win.autoupdate")
         sec_last.append("关于窗", "win.about")
         sec_last.append("退出", "win.quit")
         menu.append_section(None, sec_last)
@@ -526,6 +546,10 @@ class ChuangWindow(Adw.ApplicationWindow):
         add("wallpaperday", self._act_wallpaper_day)
         add("wallpaperrestore", self._act_wallpaper_restore)
         add("show", self._act_show)
+        add("checkupdate", self._act_check_update)
+        add("openreleases", self._act_open_releases)
+        add("downloaddeb", self._act_download_deb)
+        add("skipversion", self._act_skip_version)
         add("quit", self._act_quit)
         add("about", self._act_about)
 
@@ -715,6 +739,127 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.toast(msg, 5.0)
 
     # ------------------------------------------------------------------
+    # 检查更新
+    # ------------------------------------------------------------------
+    def _maybe_auto_check(self) -> bool:
+        if not self.config.update_check:
+            return False
+        if _time.time() - float(self.config.last_update_check or 0) < upmod.CHECK_INTERVAL:
+            return False
+        self.check_updates(manual=False)
+        return False
+
+    def check_updates(self, manual: bool = True) -> None:
+        if getattr(self, "_checking_update", False):
+            if manual:
+                self.toast("正在检查更新…", 2.0)
+            return
+        self._checking_update = True
+        if manual:
+            self.toast("正在检查更新…", 2.0)
+
+        def worker():
+            rel = upmod.fetch_latest()
+            GLib.idle_add(self._update_result, manual, rel)
+
+        threading.Thread(target=worker, daemon=True, name="chuang-update").start()
+
+    def _update_result(self, manual: bool, rel) -> bool:
+        self._checking_update = False
+        self.config.last_update_check = _time.time()
+        self.config.save()
+        if rel is None:
+            if manual:
+                self.toast("检查更新失败：网络或 GitHub 接口不可用", 5.0)
+            return False
+        newer = upmod.is_newer(rel.version, upmod.parse_version(__version__))
+        if newer and rel.tag != self.config.skipped_version:
+            self.available_release = rel
+            self._refresh_menu()
+            self.toast(f"有新版本 {rel.tag}：菜单最上面可以打开发布页", 8.0)
+        else:
+            if self.available_release is not None:
+                self.available_release = None
+                self._refresh_menu()
+            if manual:
+                self.toast(f"已经是最新的 {__version__}", 4.0)
+        return False
+
+    def _refresh_menu(self) -> None:
+        """菜单内容变了（比如出现了新版本入口）——窗口和托盘一起换掉。"""
+        self.menu_model = self._build_menu()
+        if getattr(self, "menu_button", None) is not None:
+            self.menu_button.set_menu_model(self.menu_model)
+        if getattr(self, "tray", None) is not None:
+            self.tray.reload(self.menu_model)
+
+    def _act_check_update(self, *_):
+        self.check_updates(manual=True)
+
+    def _act_auto_update(self, want: bool):
+        self.config.update_check = want
+        self.config.save()
+        self.toast("会自动检查更新（一天一次，只问版本号）" if want
+                   else "不再自动检查更新", 4.0)
+        if want:
+            self.check_updates(manual=False)
+
+    def _act_open_releases(self, *_):
+        rel = self.available_release
+        url = rel.url if rel is not None else upmod.RELEASES_URL
+        try:
+            Gio.AppInfo.launch_default_for_uri(url, None)
+            self.toast("已经在浏览器里打开了发布页", 4.0)
+        except Exception as exc:
+            self.toast(f"打不开浏览器，地址是 {url}", 8.0)
+
+    def _act_skip_version(self, *_):
+        rel = self.available_release
+        if rel is None:
+            return
+        self.config.skipped_version = rel.tag
+        self.config.save()
+        self.available_release = None
+        self._refresh_menu()
+        self.toast(f"已跳过 {rel.tag}，下一个版本再提醒", 4.0)
+
+    def _act_download_deb(self, *_):
+        rel = self.available_release
+        if rel is None or not rel.deb_url:
+            self.toast("这个版本没有提供 .deb 安装包", 4.0)
+            return
+        target = self._download_dir() / rel.deb_name
+        self.toast(f"正在下载 {rel.deb_name}…", 3.0)
+
+        def worker():
+            try:
+                req = urllib.request.Request(rel.deb_url,
+                                             headers={"User-Agent": upmod.UA})
+                with urllib.request.urlopen(req, timeout=60) as resp, \
+                        open(target, "wb") as fh:
+                    shutil.copyfileobj(resp, fh)
+                GLib.idle_add(self._download_done, True, str(target))
+            except Exception as exc:
+                GLib.idle_add(self._download_done, False, str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="chuang-deb").start()
+
+    def _download_done(self, ok: bool, info: str) -> bool:
+        if ok:
+            self.toast(f"已下载到 {info} · 安装：sudo dpkg -i {info}", 12.0)
+        else:
+            self.toast(f"下载失败：{info}", 6.0)
+        return False
+
+    @staticmethod
+    def _download_dir():
+        try:
+            path = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD)
+        except Exception:
+            path = None
+        return Path(path or Path.home() / "下载") if path else (Path.home() / "Downloads")
+
+    # ------------------------------------------------------------------
     # 关闭行为与托盘
     # ------------------------------------------------------------------
     def _act_show(self, *_):
@@ -779,9 +924,12 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.toast("每次开机，这扇窗都会自己打开" if want else "已取消开机自启")
 
     def _act_about(self, *_):
+        version_text = __version__
+        if self.available_release is not None:
+            version_text = f"{__version__}（有新版本 {self.available_release.tag}）"
         about = Gtk.AboutDialog(
             transient_for=self, modal=True,
-            program_name="窗 · Chuang", version=__version__,
+            program_name="窗 · Chuang", version=version_text,
             logo_icon_name="chuang",
             comments="把你头顶此刻真实的天空，搬到桌面的一扇窗里。\n\n"
                      "太阳、月亮、星星的位置由本地天文算法计算，"

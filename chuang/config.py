@@ -43,6 +43,9 @@ class Config:
     always_on_top: bool = False
     autostart: bool = False
     close_behavior: str = "ask"          # ask / tray / quit
+    update_check: bool = True            # 自动检查更新（一天一次）
+    last_update_check: float = 0.0
+    skipped_version: str = ""
     wallpaper_auto: bool = False
     wallpaper_dynamic: bool = False
     wallpaper_show_info: bool = False

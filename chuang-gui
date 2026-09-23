@@ -1,17 +1,44 @@
 #!/usr/bin/env python3
-"""窗 · Chuang 的入口脚本。"""
+"""窗 · Chuang 的入口脚本。
+
+不带参数即启动图形界面；另外提供两个不用开窗口的小命令：
+    chuang --version        打印版本
+    chuang --check-update   检查有没有新版本（给脚本用，有新版本时退出码为 10）
+"""
 
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from chuang.app import run  # noqa: E402
+from chuang import __version__  # noqa: E402
+
+
+def _headless(args) -> int:
+    """不依赖 GTK 的命令行功能，返回 -1 表示"应该启动图形界面"。"""
+    if "--version" in args or "-V" in args:
+        print(f"窗 · Chuang {__version__}")
+        return 0
+    if "--check-update" in args:
+        from chuang import update
+        newer, release, msg = update.check(__version__)
+        print(msg)
+        if newer and release is not None:
+            print(f"发布页：{release.url}")
+            if release.deb_url:
+                print(f"安装包：{release.deb_url}")
+            return 10
+        return 0
+    return -1
 
 if __name__ == "__main__":
     args = [a for a in sys.argv]
+    code = _headless(args)
+    if code >= 0:
+        sys.exit(code)
     if "--city" in args:
         args.remove("--city")
         from chuang.app import ChuangApp
         sys.exit(ChuangApp(force_city=True).run(args))
+    from chuang.app import run
     sys.exit(run(args))

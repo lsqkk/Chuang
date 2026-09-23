@@ -122,7 +122,7 @@ class MenuEntry:
     """托盘菜单里的一项。"""
 
     __slots__ = ("id", "label", "action", "target", "stateful", "children",
-                 "separator", "icon", "action_obj")
+                 "separator", "icon", "action_obj", "handler_id")
 
     def __init__(self, ident: int, label: str = "", action: str = "",
                  target=None, stateful: bool = False, separator: bool = False,
@@ -136,6 +136,7 @@ class MenuEntry:
         self.children = children or []
         self.icon = icon
         self.action_obj = None
+        self.handler_id = 0
 
 
 class Tray:
@@ -243,6 +244,27 @@ class Tray:
         self.available = True
         return True
 
+    def reload(self, menu_model) -> None:
+        """换一份菜单模型（例如检测到新版本后多了一项），就地刷新托盘菜单。"""
+        self.menu_model = menu_model
+        if not self.available or self.connection is None:
+            return
+        for entry in list(self.entries.values()):
+            if entry.action_obj is not None and entry.handler_id:
+                try:
+                    entry.action_obj.disconnect(entry.handler_id)
+                except Exception:
+                    pass
+                entry.handler_id = 0
+        self._build_menu()
+        self._revision += 1
+        try:
+            self.connection.emit_signal(
+                None, MENU_PATH, "com.canonical.dbusmenu", "LayoutUpdated",
+                GLib.Variant("(ui)", (self._revision, 0)))
+        except Exception:
+            pass
+
     def stop(self):
         if self.connection is not None:
             if self._sni_reg:
@@ -267,7 +289,8 @@ class Tray:
             act = self.action_lookup(entry.action) if entry.action else None
             entry.action_obj = act
             if act is not None and entry.stateful:
-                act.connect("notify::state", self._on_action_state, entry)
+                entry.handler_id = act.connect("notify::state",
+                                               self._on_action_state, entry)
 
     def _walk(self, model: Gio.MenuModel) -> list[MenuEntry]:
         out: list[MenuEntry] = []
