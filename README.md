@@ -73,7 +73,7 @@ sudo apt-get -f install      # 万一缺依赖，补一下
 ### 方式二：从源码安装
 
 ```bash
-git clone <this-repo> && cd Chuang
+git clone https://github.com/lsqkk/Chuang.git && cd Chuang
 ./install.sh                 # 需要时用 sudo
 ```
 
