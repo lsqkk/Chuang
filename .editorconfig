@@ -1,0 +1,26 @@
+# 让不同编辑器保持一致的缩进与换行
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+max_line_length = 88
+
+[{*.sh,Makefile}]
+indent_style = space
+indent_size = 2
+
+[{*.md,*.json,*.svg,*.desktop}]
+indent_style = space
+indent_size = 2
+
+[*.{png,jpg,jpeg}]
+# 截图是二进制，别做任何转换
+insert_final_newline = false
+trim_trailing_whitespace = false
