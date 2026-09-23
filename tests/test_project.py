@@ -148,5 +148,70 @@ class TestModuleLayout(unittest.TestCase):
             self.assertTrue((PKG / name).exists(), f"少了 {name}")
 
 
+class TestSelfAttributeCalls(unittest.TestCase):
+    """**类里自己调自己的方法，名字必须真的存在。**
+
+    1.1.8 的「安装更新」按钮坏在这上面：调用写的是 `self._verify_deb(...)`，
+    而方法叫 `verify_deb`（多打了一个下划线）。这只会在"下载完了、要校验"的
+    那一刻炸，而且被 except 兜成了"下载失败"——用户重下多少次都没用，
+    测试（只测 `verify_deb()` 本身）也一直绿着。
+
+    静态查一遍：类体里出现的 `self.xxx(...)`，xxx 必须在同一个类里有定义
+    （def / 赋值 / 注解 / property）。继承来的、setattr 出来的会漏网，
+    但那两类本来就不靠这条兜——漏网也只能放过，不会误报。
+    """
+
+    IGNORED = {
+        # Gtk.Window / Gtk.Widget / Adw.ApplicationWindow 这些基类给的（静态看不出来），
+        # 以及运行时才挂上的。真配错了这些名字，一开窗冒烟测试就会炸，不用静态兜。
+        "app", "get_width", "get_height", "get_visible", "is_active",
+        "is_fullscreen", "fullscreen", "unfullscreen", "set_visible", "present",
+        "close", "destroy", "connect", "add_controller", "set_content", "set_child",
+        "set_title",
+        "set_default_size", "set_size_request", "add_css_class", "get_surface",
+        "lookup_action", "add_action", "activate", "props", "run", "quit",
+    }
+
+    def _defined_names(self, cls: ast.ClassDef) -> set:
+        names = set()
+        for node in ast.walk(cls):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (isinstance(target, ast.Attribute)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"):
+                        names.add(target.attr)
+            elif isinstance(node, ast.AnnAssign):
+                target = node.target
+                if (isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"):
+                    names.add(target.attr)
+        return names
+
+    def test_every_self_call_exists(self):
+        problems = []
+        for path, src in _sources():
+            tree = ast.parse(src, filename=str(path))
+            for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+                defined = self._defined_names(cls)
+                for node in ast.walk(cls):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    func = node.func
+                    if not (isinstance(func, ast.Attribute)
+                            and isinstance(func.value, ast.Name)
+                            and func.value.id == "self"):
+                        continue
+                    if func.attr in defined or func.attr in self.IGNORED:
+                        continue
+                    if func.attr.startswith("__"):
+                        continue
+                    problems.append(f"{path.name}:{node.lineno} {cls.name}.self.{func.attr}()")
+        self.assertEqual(problems, [], f"调了不存在的方法：{problems}")
+
+
 if __name__ == "__main__":
     unittest.main()

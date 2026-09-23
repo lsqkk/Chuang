@@ -141,16 +141,23 @@ class UpdateController:
 
         def worker():
             try:
+                target.parent.mkdir(parents=True, exist_ok=True)
                 req = urllib.request.Request(rel.deb_url,
                                              headers={"User-Agent": upmod.UA})
                 with urllib.request.urlopen(req, timeout=60) as resp, \
                         open(target, "wb") as fh:
                     shutil.copyfileobj(resp, fh)
-                ok, why = self._verify_deb(rel, target)
-                GLib.idle_add(self._download_done, True, str(target),
-                              "" if ok else why)
             except Exception as exc:
                 GLib.idle_add(self._download_done, False, str(exc), "")
+                return
+            # 下载和校验分开兜：校验自己出错时，包其实已经躺在磁盘上了，
+            # 这时候报"下载失败"会把人指去重下（1.1.8 就是这么把一个
+            # AttributeError 说成"下载失败"的，用户重下多少次都没用）。
+            try:
+                ok, why = self.verify_deb(rel, target)
+            except Exception as exc:                  # noqa: BLE001
+                ok, why = False, f"校验这一步自己出错了：{type(exc).__name__}: {exc}"
+            GLib.idle_add(self._download_done, True, str(target), "" if ok else why)
 
         threading.Thread(target=worker, daemon=True, name="chuang-deb").start()
 
@@ -196,13 +203,17 @@ class UpdateController:
                 with urllib.request.urlopen(req, timeout=180) as resp, \
                         open(target, "wb") as fh:
                     shutil.copyfileobj(resp, fh)
-                ok, why = self._verify_deb(rel, target)
-                if not ok:
-                    GLib.idle_add(self._install_verify_failed, rel, str(target), why)
-                    return
-                GLib.idle_add(self._install_ready, rel, str(target))
             except Exception as exc:
                 GLib.idle_add(self._install_download_failed, rel, str(exc))
+                return
+            try:
+                ok, why = self.verify_deb(rel, target)
+            except Exception as exc:                  # noqa: BLE001
+                ok, why = False, f"校验这一步自己出错了：{type(exc).__name__}: {exc}"
+            if not ok:
+                GLib.idle_add(self._install_verify_failed, rel, str(target), why)
+                return
+            GLib.idle_add(self._install_ready, rel, str(target))
 
         threading.Thread(target=worker, daemon=True, name="chuang-install").start()
 
