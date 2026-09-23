@@ -33,7 +33,7 @@ jobs:
       release: ${{ steps.plan.outputs.release }}
       reason: ${{ steps.plan.outputs.reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0          # 要拿全部 tag 来比版本
 
@@ -55,7 +55,7 @@ jobs:
     needs: plan
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 打包 .deb
         env:
@@ -82,7 +82,7 @@ jobs:
             || { echo "::error::deb 是空的"; exit 1; }
 
       - name: 上传为工作流产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: chuang-deb
           path: |
@@ -95,10 +95,10 @@ jobs:
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 取回刚打好的 .deb
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: chuang-deb
           path: packaging/out
@@ -116,7 +116,7 @@ jobs:
           cat notes.md
 
       - name: 建 Release（tag 不存在时会一并创建）
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.plan.outputs.tag }}
           name: ${{ needs.plan.outputs.tag }}
