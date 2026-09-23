@@ -24,6 +24,7 @@ import os
 import shutil
 import sys
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -191,6 +192,15 @@ def main() -> int:
         results["ribbon_len"] = len(win.painter.ui.ribbon or [])
         results["tray"] = bool(win.tray is not None and win.tray.available)
         results["has_weather"] = scene.has_weather
+        # 1b) 配置里的时区必须真的落到引擎上。
+        #     1.1.9 的 CI 就在这里翻过车：本机系统时区恰好也是 +08:00，
+        #     时区没解析出来也看不出来；跑到 UTC 的 CI 上，日出日落就落进了
+        #     错的那一天（日出 06:32 变成前一天 22:32），日弧直接画不出来。
+        offset = win._now().utcoffset()
+        results["tz_offset"] = str(offset)
+        if win.engine._tzinfo is None or offset != timedelta(hours=8):
+            problems.append(f"配置的时区（Asia/Shanghai）没生效："
+                            f"engine._tzinfo={win.engine._tzinfo}，_now()={win._now()}")
 
         # 2) 菜单里写的动作，一个都不能少（AGENTS §3.2 那条老毛病）
         menu_actions: set[str] = set()

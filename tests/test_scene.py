@@ -24,6 +24,23 @@ class TestEngine(unittest.TestCase):
         self.eng.set_location(34.34, 108.94, "Asia/Shanghai")
         self.zi = ZoneInfo("Asia/Shanghai")
 
+    def test_default_location_still_resolves_the_timezone(self):
+        """引擎的出厂值恰好就是西安 + Asia/Shanghai。
+
+        `set_location()` 在"参数与当前值完全相同"时会提前返回——1.1.9 的 CI 就是
+        在这条路上翻的车：时区没被解析，`local_now()` 退回**系统时区**，于是
+        日出日落落进了"错的那一天"（在这台 +08:00 的机器上看不出来，跑在 UTC 的
+        机器上就原形毕露：日出 06:32 变成了前一天晚上的 22:32）。
+        """
+        eng = SkyEngine()                       # 什么都不改，就是默认值
+        self.assertIsNotNone(eng._tzinfo, "默认时区没有被解析")
+        eng.set_location(34.3416, 108.9398, "Asia/Shanghai")   # 与默认值一字不差
+        self.assertIsNotNone(eng._tzinfo, "set_location 提前返回，把时区留成了 None")
+        self.assertEqual(eng.local_now().utcoffset(),
+                         timedelta(hours=8), "本地时刻没有按配置的时区算")
+        events = eng.events(eng.local_now())
+        self.assertTrue(events["sunrise"] < events["noon"] < events["sunset"])
+
     def test_build_with_weather(self):
         when = datetime(2026, 9, 23, 18, 30, tzinfo=self.zi)
         sc = self.eng.build(when, _weather(cloud=95.0, code=63), location_label="西安")

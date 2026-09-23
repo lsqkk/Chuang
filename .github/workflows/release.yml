@@ -45,6 +45,14 @@ jobs:
       - name: 跑测试
         run: python3 -m unittest discover -s tests -t . -v
 
+      # 再拿 UTC 跑一遍。理由见 AGENTS §3.6：这台机器与开发机的系统时区都是
+      # +08:00，于是"时区没生效"这类 bug 在本地永远看不出来（1.1.9 的日弧
+      # 就是这么翻的车）。钉死一个与开发机不同的时区，这类坑每次都盖得住。
+      - name: 跑测试（同一套，时区换成 UTC）
+        env:
+          TZ: UTC
+        run: python3 -m unittest discover -s tests -t .
+
   plan:
     name: 算出版本号与 tag
     runs-on: ubuntu-22.04

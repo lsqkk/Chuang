@@ -125,14 +125,19 @@ class SkyEngine:
         self.lat = 34.3416
         self.lon = 108.9398
         self.tz = "Asia/Shanghai"
-        self._tzinfo = None
+        # 默认值就是西安/Asia/Shanghai，而 set_location() 在"参数与当前值相同"时
+        # 会提前返回——如果这里不解一次，`set_location(34.34, 108.94, "Asia/Shanghai")`
+        # 就会把 _tzinfo 留在 None 上，之后 local_now() 退回"系统时区"。
+        # 本机系统时区恰好也是 +08:00，所以一直没被发现；CI 跑在 UTC 上，
+        # 于是 sunrise/sunset 落进了"错的那一天"，日弧直接画不出来。
+        self._tzinfo = self._resolve_tz(self.tz)
         self._events: dict[str, dict] = {}
         self._starfield = StarField()
 
     # ---- 地点与时间 ---------------------------------------------------
     def set_location(self, lat: float, lon: float, tz: str) -> None:
         if (abs(lat - self.lat) < 1e-9 and abs(lon - self.lon) < 1e-9
-                and tz == self.tz):
+                and tz == self.tz and self._tzinfo is not None):
             return
         self.lat, self.lon, self.tz = lat, lon, tz
         self._tzinfo = self._resolve_tz(tz)
