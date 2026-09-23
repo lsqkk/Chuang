@@ -1,0 +1,14 @@
+# Python 运行时产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 编辑器/系统杂物
+.DS_Store
+*.swp
+*~
+
+# 安装脚本的中间产物（如果有人在本地跑过）
+dist/
+build/

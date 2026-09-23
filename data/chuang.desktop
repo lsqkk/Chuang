@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=窗
+Name[en]=Chuang
+GenericName=实时天空之窗
+GenericName[en]=A live window to the sky
+Comment=把你头顶此刻真实的天空搬到桌面的一扇窗里
+Comment[en]=A small window that shows the real sky above you right now
+Exec=chuang
+Icon=chuang
+Terminal=false
+Categories=Utility;
+Keywords=sky;weather;sun;moon;sunrise;sunset;天空;天气;日出;日落;月亮;星星;窗;
+StartupNotify=true

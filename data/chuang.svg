@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1d3a72"/>
+      <stop offset="42%" stop-color="#5b6ea8"/>
+      <stop offset="72%" stop-color="#e08b63"/>
+      <stop offset="100%" stop-color="#ffc98a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="72%" cy="70%" r="52%">
+      <stop offset="0%" stop-color="#fff3d0" stop-opacity="0.92"/>
+      <stop offset="45%" stop-color="#ffbd6d" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#ff9d4d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="frame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.06"/>
+    </linearGradient>
+    <clipPath id="win">
+      <rect x="26" y="34" width="204" height="188" rx="26" ry="26"/>
+    </clipPath>
+  </defs>
+
+  <rect x="16" y="24" width="224" height="208" rx="34" ry="34" fill="#0d1220"/>
+  <g clip-path="url(#win)">
+    <rect x="26" y="34" width="204" height="188" fill="url(#sky)"/>
+    <rect x="26" y="34" width="204" height="188" fill="url(#glow)"/>
+    <circle cx="176" cy="166" r="15" fill="#fff6dd"/>
+    <circle cx="176" cy="166" r="26" fill="#fff2cf" opacity="0.18"/>
+    <!-- 远处屋顶 -->
+    <path d="M26 190h18v-16h14v16h12v-26h16v26h14v-12h18v12h14v-22h16v22h12v-14h16v14h14v-20h16v20h12v-10h18v10h12v-18h14v18h12v30H26z"
+          fill="#141a2c" opacity="0.94"/>
+    <!-- 亮着灯的窗 -->
+    <g fill="#ffca82" opacity="0.92">
+      <rect x="70" y="180" width="4" height="4"/>
+      <rect x="80" y="186" width="4" height="4"/>
+      <rect x="120" y="174" width="4" height="4"/>
+      <rect x="130" y="182" width="4" height="4"/>
+      <rect x="158" y="186" width="4" height="4"/>
+      <rect x="196" y="176" width="4" height="4"/>
+      <rect x="206" y="184" width="4" height="4"/>
+    </g>
+    <!-- 窗台 -->
+    <rect x="26" y="212" width="204" height="12" fill="#2a2436"/>
+    <rect x="26" y="212" width="204" height="3" fill="#ffffff" opacity="0.16"/>
+  </g>
+  <rect x="26" y="34" width="204" height="188" rx="26" ry="26" fill="none"
+        stroke="url(#frame)" stroke-width="3"/>
+</svg>

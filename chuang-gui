@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""窗 · Chuang 的入口脚本。"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from chuang.app import run  # noqa: E402
+
+if __name__ == "__main__":
+    args = [a for a in sys.argv]
+    if "--city" in args:
+        args.remove("--city")
+        from chuang.app import ChuangApp
+        sys.exit(ChuangApp(force_city=True).run(args))
+    sys.exit(run(args))
