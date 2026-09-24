@@ -565,6 +565,8 @@ class WeatherService:
         self.allow_fetch = True   # 允不允许联网（CHUANG_WEATHER 的假天气会关掉它）
         self._asked_at: dict[str, float] = {}   # 某一天上次补问的时刻（限流）
         self._failed_at: dict[str, float] = {}  # 某一天上次问失败的时刻（退避）
+        self._wanted = False        # 有一次强制刷新没发出去（上一次还在飞）
+        self._wanted_done = None    # 那一枪的回声（按 R 时给的那句话）
 
     def today(self):
         """这扇窗所在的地方"今天"是几号。"""
@@ -620,6 +622,13 @@ class WeatherService:
             return False                     # 连"此刻"都还没有，等常规刷新
         if w.has_day(day):
             return False
+        # 手里这份还是**别的城市**的（刚换完城市、新一轮还没回来）：别按天补。
+        # 那一枪只带回薄薄一窗口（那天的前后两三天），而 merge() 遇到"换了城市"
+        # 是"旧的一律不算数"——于是整张表会被这一窗口顶掉，连"此刻"都没了，
+        # 卡片上写着"这天还没有预报"，要等下一个十分钟周期才恢复。
+        # 换城市本来就会强制整表刷一次，等它回来再按天补。
+        if not w.matches(self.lat, self.lon):
+            return False
         today = self.today()
         try:
             delta = (day - today).days
@@ -645,9 +654,19 @@ class WeatherService:
         被调一次——「问一次真实天气」那个按钮靠它给出成功 / 失败的反馈。
         """
         if self._busy:
+            if force:
+                # 换城市、按 R 都走这条：上一次还在飞，这一枪**没发出去**。
+                # 记下来，等它回来立刻补上——否则"刚换完城市"要等到下一个
+                # 十分钟周期才有天气，画面上写着"未联网"，可网络明明好好的。
+                self._wanted = True
+                self._wanted_done = done or self._wanted_done
             return False
         if not (self.enabled and self.allow_fetch):
             return False
+        if force:
+            # 这一枪真的发得出去：之前"没发出去、等回来补"的那笔作数，别再补一次
+            self._wanted = False
+            self._wanted_done = None
         self._busy = True
         lat, lon, tz = self.lat, self.lon, self.tz
         start, end = window if window else (None, None)
@@ -695,4 +714,10 @@ class WeatherService:
                 done(w)
             except Exception:               # 反馈那一步炸了不该带走天气
                 pass
+        # 这一枪在飞的时候还按过"问一次" / 换过城市：现在补上，别让那句话
+        # 石沉大海（以前它就是被静默吞掉的）
+        if self._wanted and self.enabled and self.allow_fetch:
+            self._wanted = False
+            nxt, self._wanted_done = self._wanted_done, None
+            self.refresh(force=True, done=nxt)
         return False

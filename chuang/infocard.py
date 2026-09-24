@@ -89,7 +89,9 @@ class InfoCard:
         if win.weather.refresh(force=True, done=self._done):
             win.toast("正在问一次真实的天气…", 2.5, icon="refresh")
         else:
-            win.toast("上一次还没问完，稍等一下", 2.5, icon="refresh")
+            # 上一次还在飞：这一枪排到它后面，回来之后立刻再问一次（见
+            # WeatherService._wanted）。所以这里说的是"马上会再问"，不是"算了"。
+            win.toast("上一次还没问完 · 它回来我马上再问一次", 3.0, icon="refresh")
 
     def _done(self, w) -> None:
         """那一次"问天气"的答案：成功了就说清楚拿到的是什么、什么时候的。"""

@@ -298,6 +298,29 @@ class TestNearbyDays(unittest.TestCase):
             svc.lat, svc.lon = 52.52, 13.40          # 换到柏林，数据还是西安的
             self.assertIsNone(svc.effective, "换了城市还画着上一座城的天气")
 
+    def test_a_day_query_never_stomps_on_another_citys_table(self):
+        """刚换完城市、新一轮还没回来时，**不按天补**。
+
+        手里那份是上一座城的表，按天补那一枪只带回薄薄一窗口（那天的前后两三天），
+        而 `merge()` 遇到"换了城市"是"旧的一律不算数"——整张表会被这一窗口顶掉，
+        连"此刻"都没了：卡片上写着"这天还没有预报"，要等下一个十分钟周期才恢复。
+        （2026-09-24 的 CI 就是在这条路上翻的车。）换城市本来就会强制整表刷一次，
+        等它回来再按天补就行。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            svc = _service_with_days(Path(d), 2, self.TODAY)   # 表是西安的
+            svc.lat, svc.lon = 52.52, 13.40                     # 窗已经挪到柏林
+            asked = []
+            with mock.patch.object(W, "fetch",
+                                   side_effect=lambda *a, **k: asked.append(a)):
+                self.assertFalse(svc.ensure_day(self.TODAY + timedelta(days=5)))
+            self.assertEqual(asked, [], "手里还是别的城的表，却按天补了一枪")
+            # 等整表刷新回来（数据地点也对上了），按天补就该照常工作
+            svc.weather = _weather_days(self.TODAY, 2, lat=52.52, lon=13.40)
+            with mock.patch.object(W, "fetch", side_effect=lambda *a, **k: asked.append(a)):
+                self.assertTrue(svc.ensure_day(self.TODAY + timedelta(days=5)))
+            self.assertEqual(len(asked), 1)
+
     @unittest.skipUnless(HAS_GLIB, "没有 PyGObject，跳过需要主循环的那两条")
     def test_refresh_reports_the_result(self):
         """「问一次真实天气」要有回声：done 回调在主线程拿到新数据。"""
@@ -316,6 +339,36 @@ class TestNearbyDays(unittest.TestCase):
                 self.assertTrue(_pump_glib(lambda: bool(got)), "done 没有被调到")
             self.assertTrue(got[-1].ok)
             self.assertEqual(got[-1].cloud, 55.0)
+
+    @unittest.skipUnless(HAS_GLIB, "没有 PyGObject，跳过需要主循环的那几条")
+    def test_a_forced_refresh_during_a_fetch_is_not_dropped(self):
+        """抓取还在飞的时候按 R / 换城市：那一枪不能被吞掉。
+
+        `refresh()` 撞上 `_busy` 就直接返回 False、什么也不记——于是"刚换完城市"
+        要等下一次十分钟周期才有天气（画面上写着"未联网"，可网络明明好好的）；
+        按 R 也只是得到一句"稍等一下"，然后就真的没有下文了。
+        现在记一笔，等手上这枪回来立刻补上，连那句回声一起。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            svc = _service_with_days(Path(d), 1, self.TODAY)
+            asked, got = [], []
+
+            def fake_fetch(lat, lon, tz="auto", start_date=None, end_date=None,
+                           forecast_days=7):
+                asked.append(forecast_days)
+                return _weather_days(self.TODAY, 2, cloud=61.0)
+
+            svc._busy = True                     # 假装上一枪还在飞
+            with mock.patch.object(W, "fetch", side_effect=fake_fetch), \
+                    mock.patch.object(W, "save_cache"):
+                self.assertFalse(svc.refresh(force=True, done=got.append))
+                self.assertTrue(svc._wanted, "这一枪被吞了，没记下来")
+                svc._busy = False
+                svc._deliver(_weather_days(self.TODAY, 1), None)   # 上一枪回来了
+                self.assertTrue(_pump_glib(lambda: bool(asked)), "没有自动补一枪")
+                self.assertTrue(_pump_glib(lambda: bool(got)), "补的那一枪没有回声")
+            self.assertTrue(got[-1].ok)
+            self.assertEqual(got[-1].cloud, 61.0)
 
 
 class TestFetchRequest(unittest.TestCase):

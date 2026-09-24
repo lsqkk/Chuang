@@ -31,6 +31,63 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# ---- 假 Open-Meteo：整轮冒烟一个字节都不往外发 ------------------------------
+#
+# 以前只在"异步那一段"才把 `fetch` 换成假的，于是**之前**那些真网络请求
+# （启动时那次、按 R 那次、换城市那次）可能正好在异步那一段落地。抓取在后台
+# 线程里，交付走 `GLib.idle_add`（idle 优先级**低于**定时器），所以"真数据"
+# 能在任意一刻盖掉假数据——2026-09-24 的 CI 就是这么翻的车
+# （"从预览回到此刻之后，天气没了"，其实是被一次晚到的真抓取顶掉了）。
+# 现在从建窗口之前就换成假的：没有真请求，也就没有东西能盖。
+ASKED: list = []
+
+
+def _as_date(value):
+    """start_date / end_date 可能是 date、str 或 None。"""
+    if value is None or hasattr(value, "year"):
+        return value
+    from datetime import date as _date
+    return _date.fromisoformat(str(value)[:10])
+
+
+def fake_fetch(lat: float, lon: float, tz: str = "auto", start_date=None,
+               end_date=None, forecast_days: int = 7):
+    """假 Open-Meteo：按要的那几天造出逐小时数据（不联网、结果可预期）。"""
+    from datetime import datetime as _dt, time as _dtime
+
+    from chuang.weather import HourPoint, Weather, today_in
+
+    ASKED.append((start_date, end_date))
+    today = today_in(tz)
+    first = _as_date(start_date) or today
+    last = _as_date(end_date) or (today + timedelta(days=forecast_days - 1))
+    w = Weather(ok=True, fetched_at=time.time(), code=3, cloud=88.0, temp=11.0,
+                apparent=10.0, humidity=70.0, precip=0.0, lat=lat, lon=lon)
+    day = first
+    while day <= last:
+        base = _dt.combine(day, _dtime(0, 0))
+        for h in range(24):
+            w.hourly.append(HourPoint(base + timedelta(hours=h), 88.0, 3, 11.0, 40.0))
+        day += timedelta(days=1)
+    w.invalidate()
+    return w
+
+
+def _weather_facts(win) -> str:
+    """出错时把"手上这份天气到底是什么"写进报告。
+
+    只看 `has_weather` 是查不出原因的：手上可能是"别的城市的表"、"断网那份"、
+    或者干脆没有对象——三种都会让画面没有天气，但该修的地方完全不同。
+    （2026-09-24 的 CI 就是靠这句话才看清是"被一次晚到的真抓取顶掉了"。）
+    """
+    w = win.weather.weather
+    if w is None:
+        return "手上没有天气对象"
+    return (f"ok={w.ok} 覆盖={w.day_span()} 数据地点={w.lat},{w.lon} "
+            f"窗所在地点={win.weather.lat},{win.weather.lon} "
+            f"是不是同一座城={w.matches(win.weather.lat, win.weather.lon)} "
+            f"旧数据={w.stale} 逐小时条数={len(w.hourly)}")
+
 
 def _isolate() -> Path:
     """建一个一次性的 HOME / XDG 环境，返回它。必须在 import chuang 之前调用。"""
@@ -170,6 +227,19 @@ def main() -> int:
         "wind_speed": 9.0, "wind_dir": 200.0, "humidity": 80.0,
         "hourly": [[f"2026-09-23T{h:02d}:00:00", 95.0, 63, 18.0, 60.0] for h in range(24)],
     }), encoding="utf-8")
+
+    # 从这里开始天气那一路就不联网了：窗口一起来那次抓取、按 R、换城市……
+    # 全都走假数据。真请求没法变成"等它落地"的确定性，只会随机盖数据（见上）。
+    import chuang.weather as wmod
+    net_patch = mock.patch.object(wmod, "fetch", side_effect=fake_fetch)
+    net_patch.start()
+    atexit.register(net_patch.stop)
+    # 最底下那道口子也记一笔：报告里要能看到"天气这一路一次真网络都没发出去"
+    raw_calls: list = []
+    raw_patch = mock.patch.object(wmod, "_fetch_json",
+                                  side_effect=lambda *a, **k: raw_calls.append(a) or {})
+    raw_patch.start()
+    atexit.register(raw_patch.stop)
 
     app = appmod.ChuangApp()
 
@@ -540,6 +610,10 @@ def main() -> int:
 
         results["tick_errors_after"] = win._tick_errors
         results["last_tick_error"] = win._last_tick_error or "-"
+        results["weather_net_calls"] = len(raw_calls)
+        if raw_calls:
+            problems.append(f"天气这一路走了真网络（{len(raw_calls)} 次）："
+                            "冒烟必须离线跑，否则假数据会被晚到的真数据盖掉")
 
     def _start_async_probes() -> None:
         """要等后台线程的那几条：用 GLib.timeout_add 一步排一步。
@@ -554,33 +628,12 @@ def main() -> int:
             app.quit()
             return
 
-        import chuang.weather as wmod
         from datetime import datetime as _dt, time as _dtime
 
         today = win._now().date()
         far = today + timedelta(days=9)
-        asked: list = []
-
-        def fake_fetch(lat, lon, tz="auto", start_date=None, end_date=None,
-                       forecast_days=7):
-            """假 Open-Meteo：按要的那几天造出逐小时数据（不联网）。"""
-            asked.append((start_date, end_date))
-            first = start_date or today
-            last = end_date or (today + timedelta(days=forecast_days - 1))
-            w = wmod.Weather(ok=True, fetched_at=time.time(), code=3, cloud=88.0,
-                             temp=11.0, apparent=10.0, humidity=70.0, precip=0.0,
-                             lat=lat, lon=lon)
-            day = first
-            while day <= last:
-                base = _dt.combine(day, _dtime(0, 0))
-                for h in range(24):
-                    w.hourly.append(wmod.HourPoint(base + timedelta(hours=h), 88.0,
-                                                   3, 11.0, 40.0))
-                day += timedelta(days=1)
-            w.invalidate()
-            return w
-
-        patcher = mock.patch.object(wmod, "fetch", side_effect=fake_fetch)
+        # 假 fetch 从建窗口之前就装好了（见 main），这里只管取它记下的问题次数
+        asked = ASKED
         allow = win.weather.allow_fetch
         done = []
 
@@ -596,13 +649,9 @@ def main() -> int:
             GLib.timeout_add(100, tick)
 
         def finish():
-            """收尾：把假 fetch 换回来、退出，让 main() 去打印结果。"""
+            """收尾：退出，让 main() 去打印结果（假 fetch 由 atexit 摘掉）。"""
             if not done:
                 done.append(1)
-                try:
-                    patcher.stop()
-                except Exception:            # noqa: BLE001 - 没 start 过就算了
-                    pass
                 win.weather.allow_fetch = allow
                 try:
                     win._set_preview(None)
@@ -612,9 +661,7 @@ def main() -> int:
             return False
 
         def step_ask():
-            patcher.start()
             win.weather.allow_fetch = True
-            # 上一次"真网络"那次可能还在飞（抓取是后台线程）：等它落地再发这一枪。
             # refresh() 返回 True = 这一枪真的打出去了。
             poll(lambda: win.weather.refresh(force=True), step_after_first, 20.0)
             return False
@@ -640,7 +687,8 @@ def main() -> int:
             results["weather_asked_for_far"] = [
                 str(x) for x in asked[-1] if x is not None] if asked else None
             if not asked or asked[-1][0] != far - timedelta(days=1):
-                # 网络太慢/接口被占住，这一枪根本没发出去：逻辑由
+                # 这一枪根本没发出去（那天已经在表里、或被限流跳过）：
+                # 逻辑由
                 # tests/test_weather.py 的 TestNearbyDays 钉着，这里不误报
                 results["far_preview"] = "跳过（补问没能发出去）"
                 return finish()
@@ -649,20 +697,22 @@ def main() -> int:
                                       round(scene.cloud), scene.weather_nodata]
             if not scene.has_weather or scene.weather_now or scene.weather_nodata:
                 problems.append(f"跳到 {far} 之后那天的天气还是不对："
-                                f"{results['far_preview']}")
+                                f"{results['far_preview']}｜{_weather_facts(win)}")
             win._set_preview(None)
             now_scene = win._current_scene()
             results["now_after_preview"] = [now_scene.has_weather,
                                             now_scene.weather_now]
             if not now_scene.has_weather or not now_scene.weather_now:
-                problems.append("从预览回到此刻之后，天气没了（被补问那份顶掉了？）")
+                problems.append("从预览回到此刻之后，天气没了（被补问那份顶掉了？）"
+                                f"｜{_weather_facts(win)}")
             # 真的没有那天的数据时（超出预报范围），画面要老实说"没有预报"
             beyond = today + timedelta(days=40)
             win._set_preview(_dt.combine(beyond, _dtime(14, 0), tzinfo=win._now().tzinfo))
             nodata = win._current_scene()
             results["beyond_forecast"] = [nodata.has_weather, nodata.weather_nodata]
             if nodata.has_weather or not nodata.weather_nodata:
-                problems.append("40 天以后的日子还画着天气（应该是'这天还没有预报'）")
+                problems.append("40 天以后的日子还画着天气（应该是'这天还没有预报'）"
+                                f"｜{_weather_facts(win)}")
             return finish()
 
         # 0) 菜单弹层"关掉了"那一记回声（1.1.11 的焦点回收）：它是排到 idle
@@ -692,7 +742,7 @@ def main() -> int:
             results["focus_hook_popover"] = len(spy)
             if not spy:
                 problems.append("菜单弹层关掉之后没有把焦点交回画面（挂钩没挂上？）")
-            # 先让手上那次"真网络"抓取彻底停下来，再换成假的（免得两拨打架）
+            # 让手上那次抓取先落地，再发后面那几枪（抓取一次只许一枪，别打架）
             win.weather.allow_fetch = False
             poll(lambda: not win.weather._busy, step_ask, 15.0)
             return False
