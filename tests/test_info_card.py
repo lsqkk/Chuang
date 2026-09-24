@@ -240,6 +240,61 @@ class TestInfoCardDrawing(unittest.TestCase):
                             self._card_pixels(when=base, weather=w3),
                             "露点变了，卡片还停在旧的那一行上")
 
+    def test_no_body_temperature_on_a_day_we_are_only_previewing(self):
+        """体感是"此刻"那一份读数，逐小时表里没有它。
+
+        预览别的日子时 `scene.apparent` 还是 0——卡片上写"21° 体感 0°"是一眼假
+        （用户截图里就是这个）。体感只许在"就是此刻"的时候出现。
+        """
+        base = datetime.now(TZ).replace(hour=12, minute=0, second=0, microsecond=0)
+        weather = _weather_from(base.replace(hour=0))
+        weather.apparent = 11.0
+        now_scene = self.engine.build(base, weather, location_label="西安")
+        self.assertTrue(now_scene.weather_now)
+        self.assertIn("体感", self.painter._hero_sub(now_scene))
+        # 预览别的日子（那天在预报表里）：有那一天的数据，但"此刻"的读数不该跟过去
+        far = base + timedelta(days=2)
+        sc = self.engine.build(far, weather, preview=True, location_label="西安")
+        self.assertTrue(sc.has_weather)
+        self.assertFalse(sc.weather_now)
+        sub = self.painter._hero_sub(sc)
+        self.assertNotIn("体感", sub, f"预览别的日子还写着体感：{sub!r}")
+        self.assertIn("云量", sub)
+
+    def test_the_grid_type_scale_keeps_its_hierarchy(self):
+        """一格里的三档字号必须有明显的差别（"仰角"不能和"太阳"一样大）。"""
+        P = SkyPainter
+        self.assertLessEqual(P.F_NOTE, P.F_LABEL * 0.92,
+                             "副值和标题一样大——层次就没了")
+        self.assertGreaterEqual(P.F_VALUE, P.F_LABEL * 1.15,
+                                "数值没有比标题大，读起来就没有主次")
+        self.assertLessEqual(P.F_CHIP_KEY, P.F_CHIP_VAL * 0.92,
+                             "小字条里名称不该比数值还大")
+        self.assertGreaterEqual(P.TEXT_FLOOR, 0.9,
+                                "字号下限太低——小窗口里会缩到看不清")
+
+    def test_the_card_always_fits_the_window(self):
+        """卡片不许比窗口还高，命中方块也不许跑出画布。
+
+        小窗口（最小 360×260）里一列版式会排得很高——那时要按"最不重要的先去掉"
+        逐级降级，而不是把字画到窗口外面去（用户截图里就撞上过这种）。
+        """
+        for w, h in ((360, 260), (420, 300), (500, 380), (700, 520),
+                     (800, 620), (1000, 640), (1920, 1080)):
+            painter = SkyPainter(seed=7)
+            scene = self.engine.build(DAY, _weather(), location_label="西安 · 陕西省")
+            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+            painter.draw(cairo.Context(surf), w, h, scene, 180.0)
+            L = painter._info_layout(w, h, scene)
+            self.assertLessEqual(L["card_h"], h,
+                                 f"{w}×{h} 的卡片比窗口还高：{L['card_h']:.0f}")
+            self.assertLessEqual(L["card_w"], w)
+            for x, y, rw, rh, kind, _when in painter.ui.info_rects:
+                self.assertGreaterEqual(x, 0, f"{w}×{h} 的 {kind} 跑到左边外面了")
+                self.assertGreaterEqual(y, 0, f"{w}×{h} 的 {kind} 跑到上边外面了")
+                self.assertLessEqual(x + rw, w, f"{w}×{h} 的 {kind} 跑到右边外面了")
+                self.assertLessEqual(y + rh, h, f"{w}×{h} 的 {kind} 跑到下边外面了")
+
     def test_polar_day_has_no_arc(self):
         """极昼没有日出日落——那时候不许画一条假的日弧出来。"""
         eng = SkyEngine()
