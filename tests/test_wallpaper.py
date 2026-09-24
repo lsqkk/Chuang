@@ -6,10 +6,19 @@
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from chuang import wallpaper as W
+
+try:
+    from gi.repository import GLib as _GLib
+    import cairo as _cairo                      # noqa: F401
+    HAS_STACK = True
+except Exception:                               # noqa: BLE001 - 缺库就跳过
+    HAS_STACK = False
 
 
 class FakeGsettings:
@@ -173,6 +182,76 @@ class TestScreenSize(unittest.TestCase):
         w, h = W.screen_size()             # 没有 Gdk 时应该退回 1920×1080
         self.assertGreaterEqual(w, 320)
         self.assertGreaterEqual(h, 240)
+
+
+class TestInfoMode(unittest.TestCase):
+    """壁纸上那张「此刻的事实」的版式：跟随窗口 / 精简一条 / 完整版。"""
+
+    def test_three_modes_resolve_as_documented(self):
+        from chuang.wallpaper_ctl import info_compact_for
+        cases = (("follow", True, True), ("follow", False, False),
+                 ("slim", True, True), ("slim", False, True),
+                 ("full", True, False), ("full", False, False),
+                 ("认不出来的值", True, True))       # 兜底按"跟随"
+        for mode, window_compact, want in cases:
+            with self.subTest(mode=mode, window=window_compact):
+                self.assertEqual(info_compact_for(mode, window_compact), want)
+
+
+@unittest.skipUnless(HAS_STACK, "没有 pycairo / PyGObject，跳过")
+class TestWallpaperCardStyle(unittest.TestCase):
+    """整条链路走一遍：给了 compact，画出来的就是精简版那张卡片。"""
+
+    def _render(self, tmp: Path, compact: bool):
+        from chuang.weather import HourPoint, Weather
+        tz = ZoneInfo("Asia/Shanghai")
+        now = datetime.now(tz)
+        base = now.replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        weather = Weather(ok=True, fetched_at=now.timestamp(), code=63, cloud=95.0,
+                          temp=18.0, apparent=17.0, humidity=80.0, precip=2.0)
+        for i in range(48):
+            weather.hourly.append(HourPoint(base + timedelta(hours=i), 95.0, 63,
+                                            18.0, 60.0))
+        weather.invalidate()
+        slots = (tmp / "sky-a.png", tmp / "sky-b.png")
+        worker = W.Worker(34.3416, 108.9398, "Asia/Shanghai", "西安 · 陕西省", seed=3)
+        out = []
+        with mock.patch.object(W, "SLOTS", slots), \
+                mock.patch.object(W, "CACHE", tmp):
+            # adopt=False：就地重写槽位文件，**不碰** gsettings（测试不写用户桌面）
+            worker.render_now(now, weather, True, False, (720, 460), 0,
+                              lambda *a: out.append(a), compact=compact)
+            self._pump(lambda: bool(out))
+        self.assertTrue(out, "壁纸渲染没有回调（后台线程没跑完？）")
+        self.assertTrue(slots[0].exists(), "槽位文件没写出来")
+        return slots[0].read_bytes(), bool(worker.painter.ui.info_compact)
+
+    @staticmethod
+    def _pump(predicate, timeout: float = 10.0) -> bool:
+        """转主循环，等后台那条渲染线程把活干完（它会 idle_add 回来）。"""
+        loop = _GLib.MainLoop()
+
+        def tick():
+            if predicate():
+                loop.quit()
+                return False
+            return True
+
+        _GLib.timeout_add(20, tick)
+        _GLib.timeout_add(int(timeout * 1000), lambda: (loop.quit(), False)[1])
+        loop.run()
+        return bool(predicate())
+
+    def test_the_card_style_reaches_the_renderer(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            full, full_compact = self._render(Path(d), compact=False)
+            slim, slim_compact = self._render(Path(d), compact=True)
+        self.assertFalse(full_compact)
+        self.assertTrue(slim_compact)
+        self.assertNotEqual(hashlib.sha256(full).hexdigest(),
+                            hashlib.sha256(slim).hexdigest(),
+                            "精简与完整画出来的壁纸一模一样")
 
 
 if __name__ == "__main__":

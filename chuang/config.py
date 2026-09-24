@@ -37,6 +37,10 @@ CLOSE_BEHAVIORS = ("ask", "tray", "quit")
 # 24 近似电影、30 省电、45 折中、60 顺滑、120 高刷屏（屏幕跟不上时会自动以屏幕为准）。
 FRAME_RATES = (24, 30, 45, 60, 120)
 DEFAULT_FRAME_RATE = 60
+# 壁纸上那张「此刻的事实」用哪种版式：
+#   follow = 跟窗口里的一样（窗口收成一条，壁纸也跟着收）；slim = 永远精简一条；
+#   full = 永远完整版（壁纸大、站远看，很多人更喜欢完整的）。
+INFO_MODES = ("follow", "slim", "full")
 
 
 @dataclass
@@ -79,6 +83,7 @@ class Config:
     wallpaper_dynamic: bool = False
     wallpaper_show_info: bool = False
     wallpaper_show_ribbon: bool = False
+    wallpaper_info_mode: str = "follow"   # follow / slim / full（见 INFO_MODES）
     prev_wallpaper: str = ""
     prev_wallpaper_dark: str = ""
     prev_wallpaper_options: str = ""     # 原来是 zoom / scaled / centered / wallpaper
@@ -144,6 +149,8 @@ class Config:
             self.wallpaper_interval = 10
         if self.close_behavior not in CLOSE_BEHAVIORS:
             self.close_behavior = "ask"
+        if self.wallpaper_info_mode not in INFO_MODES:
+            self.wallpaper_info_mode = "follow"
         try:
             self.wallpaper_slot = 1 if int(self.wallpaper_slot or 0) % 2 else 0
         except (TypeError, ValueError):

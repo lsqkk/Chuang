@@ -5,6 +5,7 @@
 """
 
 import ast
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -146,6 +147,54 @@ class TestModuleLayout(unittest.TestCase):
         for name in ("actions.py", "dialogs.py", "diagnostics.py",
                      "update_ui.py", "wallpaper_ctl.py"):
             self.assertTrue((PKG / name).exists(), f"少了 {name}")
+
+
+class TestActionNames(unittest.TestCase):
+    """`set_toggle("info_compact")` 这种名字写错一个字母 = 点了没反应。
+
+    1.1.9 信息卡右上角那颗收起箭头就是这么坏的：处理器找的是 info_compact，
+    而注册的动作叫 infocompact——`lookup_action()` 找不到就静默返回，界面上
+    看起来就是"点了没反应"（AGENTS §3.2）。这里把动作名钉死。
+    """
+
+    @staticmethod
+    def _actions_src() -> str:
+        return (PKG / "actions.py").read_text(encoding="utf-8")
+
+    def _registered(self) -> set:
+        src = self._actions_src()
+        consts = dict(re.findall(r'^([A-Z_]+) = "([a-z]+)"', src, re.M))
+        names = set(re.findall(r'(?:add|add_toggle|add_radio)\("([a-z]+)"', src))
+        names |= {consts[c] for c in
+                  re.findall(r'(?:add|add_toggle|add_radio)\(([A-Z_]+),', src)
+                  if c in consts}
+        return names
+
+    def test_every_toggle_name_is_registered(self):
+        """只看**真的调用**（注释和文档里提到名字不算）。"""
+        registered = self._registered()
+        consts = dict(re.findall(r'^([A-Z_]+) = "([a-z]+)"',
+                                 self._actions_src(), re.M))
+        self.assertIn("info", registered)
+        problems = []
+        for path, src in _sources():
+            for node in ast.walk(ast.parse(src, filename=str(path))):
+                if not (isinstance(node, ast.Call) and node.args):
+                    continue
+                func = node.func
+                if not (isinstance(func, ast.Attribute)
+                        and func.attr in ("set_toggle", "action_state")):
+                    continue
+                arg = node.args[0]
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    resolved = arg.value
+                elif isinstance(arg, ast.Attribute):
+                    resolved = consts.get(arg.attr, "")
+                else:
+                    continue
+                if resolved and resolved not in registered:
+                    problems.append(f"{path.name}:{node.lineno} {resolved}")
+        self.assertEqual(problems, [], f"这些动作名没有注册过：{problems}")
 
 
 class TestSelfAttributeCalls(unittest.TestCase):

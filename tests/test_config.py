@@ -45,6 +45,7 @@ class TestSanitize(unittest.TestCase):
         cfg = C.Config()
         cfg.wallpaper_interval = "abc"
         cfg.close_behavior = "nonsense"
+        cfg.wallpaper_info_mode = "差不多吧"
         cfg.wallpaper_slot = 7
         cfg.fov = 9999
         cfg.window_w = 10
@@ -52,6 +53,7 @@ class TestSanitize(unittest.TestCase):
         cfg.sanitize()
         self.assertEqual(cfg.wallpaper_interval, 10)
         self.assertEqual(cfg.close_behavior, "ask")
+        self.assertEqual(cfg.wallpaper_info_mode, "follow")   # 认不出的版式回默认
         self.assertEqual(cfg.wallpaper_slot, 1)      # 7 % 2
         self.assertEqual(cfg.fov, 360.0)
         self.assertEqual(cfg.window_w, 320)

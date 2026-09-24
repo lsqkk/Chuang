@@ -43,7 +43,9 @@ def main():
 
     weather = None
     if code is not None:
-        weather = Weather(ok=True, fetched_at=0.0, code=code, cloud=cloud,
+        # fetched_at 给"五分钟前"：卡片底下会写"天气更新于 18:30"
+        weather = Weather(ok=True, fetched_at=when.timestamp() - 300.0,
+                          code=code, cloud=cloud,
                           wind_speed=wind, wind_dir=wdir, temp=19.0, apparent=19.0,
                           humidity=70.0, precip=1.5 if code in (63, 65, 95) else 0.0,
                           visibility=9000.0)

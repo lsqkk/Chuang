@@ -19,6 +19,13 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
+# 勾选项的动作名。菜单、托盘、快捷键、信息卡上那颗按钮都指着同一个名字，
+# 名字写错一个，表现就是"点了没反应"——1.1.9 信息卡右上角的收起箭头
+# 就是死在这里（处理器写的是 info_compact，注册的是 infocompact，
+# set_toggle() 找不到动作就静默返回）。所以名字只在这里写一遍。
+INFO_TOGGLE = "info"             # 显示「此刻的事实」（空格）
+COMPACT_TOGGLE = "infocompact"   # 信息卡精简模式（C）
+
 
 def build_menu(win) -> Gio.Menu:
         """菜单：顶层只留"一眼能看懂"的几件事，其余按用途收进子菜单。
@@ -59,6 +66,13 @@ def build_menu(win) -> Gio.Menu:
         wall.append("生成离线动态壁纸（15 分钟一帧，关掉也有效）", "win.wallpaperday")
         w3 = Gio.Menu()
         w3.append("壁纸上显示「此刻的事实」", "win.wallpaperinfo")
+        wi = Gio.Menu()
+        for label, target in (("跟窗口一致", "follow"), ("精简一条", "slim"),
+                              ("完整版", "full")):
+            item = Gio.MenuItem.new(label, "win.wallpaperinfomode")
+            item.set_attribute_value("target", GLib.Variant("s", target))
+            wi.append_item(item)
+        w3.append_submenu("壁纸上信息卡的版式", wi)
         w3.append("壁纸上显示「今日天色」长卷", "win.wallpaperribbon")
         w3.append("还原成原来的壁纸", "win.wallpaperrestore")
         w3.append("壁纸诊断（时间不对时点这里）…", "win.wallpaperdiag")
@@ -186,8 +200,8 @@ def register_actions(win) -> None:
 
     add_toggle("pin", win.config.always_on_top, win._act_pin)
     add_toggle("weather", win.config.mirror_weather, win._act_weather)
-    add_toggle("info", win.painter.ui.show_info, win.info.act_show)
-    add_toggle("infocompact", win.config.info_compact, win.info.act_compact)
+    add_toggle(INFO_TOGGLE, win.painter.ui.show_info, win.info.act_show)
+    add_toggle(COMPACT_TOGGLE, win.config.info_compact, win.info.act_compact)
     add_toggle("ribbon", win.config.show_ribbon, win._act_ribbon)
     add_toggle("autostart", win.config.autostart, win._act_autostart)
     add_toggle("autostarthidden", win.config.autostart_hidden,
@@ -202,6 +216,8 @@ def register_actions(win) -> None:
     add_radio("closebehavior", win.config.close_behavior, win._act_close_behavior)
     add_radio("wallpaperinterval", str(win.config.wallpaper_interval),
               win.wallpaper.act_interval)
+    add_radio("wallpaperinfomode", win.config.wallpaper_info_mode,
+              win.wallpaper.act_info_mode)
     add_radio("framerate", str(win.config.frame_rate), win.frames.act_rate)
 
     quit_action = Gio.SimpleAction.new("quit", None)

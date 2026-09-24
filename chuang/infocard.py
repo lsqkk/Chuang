@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
-import time as _time
+from datetime import datetime
 
+from . import actions as actionmod
 from .render import clamp
 from .scene import compass
 from .weather import code_text
@@ -55,7 +56,7 @@ class InfoCard:
         win = self.win
         _rx, _ry, _rw, _rh, kind, when = self.ui.info_rects[idx]
         if kind == "toggle":
-            win.set_toggle("info_compact", not win.config.info_compact)
+            win.set_toggle(actionmod.COMPACT_TOGGLE, not win.config.info_compact)
             return
         if kind == "refresh":
             self.refresh_weather()
@@ -64,33 +65,86 @@ class InfoCard:
             when = self.arc_time(x)
         if kind in ("arc", "open") and when is not None:
             win._set_preview(when)
-            win.toast(f"正在看 {when.strftime('%H:%M')} 的窗外 · Esc 回到此刻", 3.0)
+            win.toast(win.preview_note(when), 3.0)
         elif kind == "detail":
             self.show_weather_detail()
 
     def refresh_weather(self) -> None:
-        """右下角那个刷新：立刻去问一次真实天气。"""
+        """右下角那个刷新（也是 R 键）：去问一次真实天气，并且报个结果。
+
+        "问了一次"必须有回声：以前这里只弹一句"正在问…"就没了下文，网络
+        不通、接口改了口径，都看不出来。现在成功 / 失败都会再弹一句。
+        """
         win = self.win
         if not win.weather.enabled:
             win.toast("「跟随真实天气」是关着的 · 菜单 → 跟随真实天气", 4.0, icon="warn")
             return
-        win.weather.refresh(force=True)
-        win.toast("正在问一次真实的天气…", 2.5, icon="refresh")
+        if win.weather.refresh(force=True, done=self._done):
+            win.toast("正在问一次真实的天气…", 2.5, icon="refresh")
+        else:
+            win.toast("上一次还没问完，稍等一下", 2.5, icon="refresh")
+
+    def _done(self, w) -> None:
+        """那一次"问天气"的答案：成功了就说清楚拿到的是什么、什么时候的。"""
+        win = self.win
+        if w is None:
+            win.toast("这次没问到天气", 5.0, icon="warn")
+            return
+        if not w.ok:
+            win.toast(f"没问到天气：{w.error or '网络不通'}", 6.0, icon="warn")
+            return
+        when = ""
+        if w.fetched_at:
+            try:
+                when = datetime.fromtimestamp(w.fetched_at,
+                                              win.engine._tzinfo).strftime("%H:%M")
+            except (OverflowError, OSError, ValueError):
+                when = ""
+        if w.stale:
+            win.toast(f"这次没问到（{w.error or '网络不通'}）"
+                      + (f"，还是 {when} 那份" if when else "，还是上一次那份"),
+                      6.0, icon="warn")
+            return
+        head = f"天气更新于 {when}：{w.text} {w.temp:.0f}°C" if when else \
+            f"天气拿到手了：{w.text} {w.temp:.0f}°C"
+        span = w.day_span()
+        tail = f"　·　附近几天（{span[0][5:]} ～ {span[1][5:]}）也一起拿回来了" if span else ""
+        win.toast(head + tail, 5.5, icon="check")
 
     def show_weather_detail(self) -> None:
         """把"窗外"那一行的底稿摊开：体感、风、能见度、数据来源与时间。"""
         win = self.win
         sc = win._current_scene()
-        w = win.weather.weather
+        # 用"此刻该用来作画的那份"：关掉天气时是 None，换了城市而新数据还没
+        # 回来时也是 None（那时候手上那份是上一座城的，摊开看只会误导人）
+        w = win.weather.effective
+        stamp = self._stamp(w)
         lines = [f"{sc.location_label or sc.location_name}　{sc.when:%Y-%m-%d %H:%M}",
                  ""]
         if not win.weather.enabled:
             lines += ["「跟随真实天气」是关着的，画面里只有天文。",
                       "想让它显示真实的云和雨：菜单 → 跟随真实天气。"]
+        elif sc.weather_nodata:
+            span = w.day_span() if (w is not None and w.ok) else None
+            lines += ["这一天的预报还没问到。",
+                      "Open-Meteo 的预报只到 16 天以内；"
+                      "手上这份覆盖的是"
+                      + (f" {span[0][5:]} ～ {span[1][5:]}。" if span else " 更近的几天。"),
+                      "把长卷拖远一点、或者过一会儿再看，这一天的云和雨就会补上。"]
         elif w is None or not w.ok:
             lines += ["还没拿到天气数据。",
                       "天气来自 Open-Meteo（免费、不用账号，只上传经纬度）。",
                       "网络不通时画面会自动退回纯天文模式，天空依然是对的。"]
+        elif not sc.weather_now:
+            # 预览到别的日子：逐小时预报里有云、天气现象、气温，
+            # 但没有"体感 / 湿度 / 风"这三样（接口只给此刻的）
+            lines += [f"那会儿　{sc.weather_text}　{sc.temp:.0f}°C",
+                      f"云量　　{sc.cloud:.0f}%",
+                      "",
+                      "看的是别的日子，所以只报逐小时的云、天气和气温；"
+                      "体感、湿度、风是此刻的读数，这里就不写了。",
+                      f"数据　　Open-Meteo　更新于 {stamp}" if stamp
+                      else "数据　　Open-Meteo　（逐小时预报）"]
         else:
             lines.append(f"现在　　{sc.weather_text}　{sc.temp:.0f}°C"
                          f"（体感 {sc.apparent:.0f}°C）")
@@ -100,13 +154,21 @@ class InfoCard:
                          + (f"　阵风 {w.gusts:.1f} km/h" if w.gusts else ""))
             lines.append(f"降水　　{w.precip:.1f} mm/时　"
                          f"能见度 {w.visibility / 1000:.1f} km")
-            when = ("更新于 " + _time.strftime("%H:%M", _time.localtime(w.fetched_at))
-                    if w.fetched_at else "")
             lines.append("")
-            lines.append("数据　　Open-Meteo　" + when
+            lines.append("数据　　Open-Meteo　" + (f"更新于 {stamp}" if stamp else "")
                          + ("（离线，上一次的结果）" if sc.weather_stale else ""))
         lines += ["", "太阳、月亮、星星的位置全是本地算的，一点数据都不外传。"]
         win._show_detail("窗外的天气", "\n".join(lines))
+
+    def _stamp(self, w) -> str:
+        """"这份天气是什么时候问回来的"，按这扇窗所在地方的时间写。"""
+        if w is None or not getattr(w, "fetched_at", 0):
+            return ""
+        tz = self.win.engine._tzinfo
+        try:
+            return datetime.fromtimestamp(w.fetched_at, tz).strftime("%m-%d %H:%M")
+        except (OverflowError, OSError, ValueError):
+            return ""
 
     # ---- 菜单 / 快捷键那一组开关 --------------------------------------
     def act_show(self, want: bool) -> None:
@@ -132,5 +194,13 @@ class InfoCard:
         """长卷每一格配一句天气——悬停到那一格时会冒出来。"""
         if weather is None or not weather.ok:
             return [""] * len(ribbon)
-        return [f"{code_text(weather.code_at(t))} {weather.temp:.0f}°C"
-                f" · 云量 {weather.cloud_at(t):.0f}%" for t, _col in ribbon]
+        out = []
+        for t, _col in ribbon:
+            code, cloud = weather.code_at(t), weather.cloud_at(t)
+            if code is None or cloud is None:
+                out.append("")            # 那天的预报没问回来：不编
+                continue
+            temp = weather.temp_at(t)
+            warmth = f"{temp if temp is not None else weather.temp:.0f}°C"
+            out.append(f"{code_text(code)} {warmth} · 云量 {cloud:.0f}%")
+        return out

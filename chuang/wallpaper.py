@@ -379,7 +379,8 @@ class Worker:
 
     def render_now(self, when: datetime, weather, show_info: bool, show_ribbon: bool,
                    size: tuple[int, int], slot: int, done,
-                   adopt: bool = False, weather_off: bool = False) -> None:
+                   adopt: bool = False, weather_off: bool = False,
+                   compact: bool = False) -> None:
         """渲染"此刻"的一张壁纸。done(ok, message, slot) 在主线程被调用。
 
         adopt=False（常态）：**就地更新桌面正在显示的那个文件**。gnome-shell
@@ -396,6 +397,7 @@ class Worker:
             from gi.repository import GLib
             try:
                 self.painter.ui.show_info = show_info
+                self.painter.ui.info_compact = compact
                 self.painter.ui.show_ribbon = show_ribbon
                 if show_ribbon:
                     day = when.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -429,7 +431,7 @@ class Worker:
 
     def render_day(self, day: datetime, weather, show_info: bool, show_ribbon: bool,
                    size: tuple[int, int], frames: int, progress, done,
-                   weather_off: bool = False) -> None:
+                   weather_off: bool = False, compact: bool = False) -> None:
         """渲染一整天的 48 帧并生成动态壁纸 XML。"""
         if not self._lock.acquire(blocking=False):
             return
@@ -444,6 +446,7 @@ class Worker:
                 stage = next((d for d in FRAME_DIRS if d != active), FRAME_DIRS[0])
                 _clear_dir(stage)
                 self.painter.ui.show_info = show_info
+                self.painter.ui.info_compact = compact
                 self.painter.ui.show_ribbon = show_ribbon
                 if show_ribbon:
                     self.painter.ui.ribbon = self.engine.ribbon(day, weather)

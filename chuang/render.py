@@ -1955,6 +1955,10 @@ class SkyPainter:
                                     f"{compass(scene.wind_dir)} {scene.wind_speed:.1f} km/h",
                                     f"湿度 {scene.humidity:.0f}%" if scene.humidity else "",
                                     "detail"))
+        elif scene.weather_nodata:
+            # 跳到远一点的日子：这一天还没有预报，就直说没有
+            rows.append(FactRow("cloud", "窗外", "这天还没有预报",
+                                "Open-Meteo 只给 16 天以内", "detail"))
         elif scene.weather_disabled:
             # 用户自己关的天气，别写成"未联网"——那会把人指去查网络
             rows.append(FactRow("info", "窗外", "你关掉了天气 · 只看天", "", "detail"))
@@ -2009,6 +2013,7 @@ class SkyPainter:
             hover_dt.strftime("%H:%M") if hover_dt else "",
             scene.sun_alt >= -0.9, round(scene.moon_phase, 3),
             scene.has_weather, scene.weather_disabled, scene.weather_stale,
+            scene.weather_nodata, scene.weather_now, int(scene.weather_at),
             scene.weather_text, round(scene.cloud), round(scene.temp),
             round(scene.apparent), round(scene.humidity),
             round(scene.wind_speed, 1), round(scene.wind_dir),
@@ -2240,15 +2245,14 @@ class SkyPainter:
                       (250, 250, 255), 0.82)
         cy += hint_h
 
-        # ---- 脚注：数据从哪来的 + 立刻刷新一次 ----
-        foot = "天文 · 本地计算　　天气 · Open-Meteo"
-        if scene.weather_stale:
-            foot = "网络不通 · 显示上次天气　天文 · 本地计算"
-        elif not scene.has_weather:
-            foot = "天文 · 本地计算　　天气未接入"
-        draw_text(cr, foot, cx, cy, 10 * scale, (200, 210, 230), 0.38)
         rb = 20 * scale
         rbx, rby = x + card_w - pad - rb, cy - 5 * scale
+        # ---- 脚注：数据从哪来、什么时候问回来的 + 立刻刷新一次 ----
+        # 一行里要塞下"来源 + 更新于几点"，窗口窄的时候先让短的顶上来：
+        # 与其把字挤到刷新按钮底下（或截半句），不如少说几个字。
+        draw_text_room = (x + card_w - pad - rb - 10 * scale) - cx
+        foot = self._foot_text(scene, cr, draw_text_room, 10 * scale)
+        draw_text(cr, foot, cx, cy, 10 * scale, (200, 210, 230), 0.38)
         self._icon_button(cr, "refresh", rbx + rb / 2, rby + rb / 2, rb,
                           (228, 236, 250), 0.8,
                           hover=hover == len(rects))
@@ -2256,6 +2260,47 @@ class SkyPainter:
                       rb + 4 * scale, "refresh", None))
         cr.restore()
         return rects
+
+    @staticmethod
+    def _weather_stamp(scene: Scene) -> str:
+        """天气是什么时候问回来的——按这扇窗所在地方的时间写。"""
+        if not scene.weather_at:
+            return ""
+        try:
+            at = datetime.fromtimestamp(scene.weather_at, scene.when.tzinfo)
+        except (OverflowError, OSError, ValueError):
+            return ""
+        if at.date() == scene.when.date():
+            return at.strftime("%H:%M")
+        return at.strftime("%m-%d %H:%M")
+
+    def _foot_text(self, scene: Scene, cr, room: float, size: float) -> str:
+        """卡片底部那一行：剩多少宽度就说多少话（宁可少说，也不挤到按钮底下）。"""
+        stamp = self._weather_stamp(scene)
+        if scene.has_weather and scene.weather_stale:
+            head = (f"网络不通 · 显示上次天气（{stamp}）" if stamp
+                    else "网络不通 · 显示上次天气")
+            options = [head, "网络不通 · 上次的天气"]
+        elif scene.has_weather and scene.weather_now and stamp:
+            options = [f"天文 · 本地计算　　天气更新于 {stamp} · Open-Meteo",
+                       f"天气更新于 {stamp} · Open-Meteo",
+                       f"天气更新于 {stamp}"]
+        elif scene.has_weather and scene.weather_now:
+            # 就是此刻那份天气，只是不知道是什么时候问回来的（假数据 / 老缓存）
+            options = ["天文 · 本地计算　　天气 · Open-Meteo", "天气 · Open-Meteo"]
+        elif scene.has_weather:
+            options = ["天文 · 本地计算　　这一天的逐小时预报",
+                       "这一天的逐小时预报"]
+        elif scene.weather_nodata:
+            options = ["天文 · 本地计算　　这天的预报还没问到", "这天的预报还没问到"]
+        elif scene.weather_disabled:
+            options = ["天文 · 本地计算　　你关掉了天气", "只看天"]
+        else:
+            options = ["天文 · 本地计算　　天气未接入", "天文 · 本地计算"]
+        for text in options[:-1]:
+            if draw_text(cr, text, 0, -1000, size, (255, 255, 255), 0.0)[0] <= room:
+                return text
+        return options[-1]
 
     # ------------------------------------------------------------------
     def _draw_toast(self, cr, w, h):

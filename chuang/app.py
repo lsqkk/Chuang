@@ -19,6 +19,7 @@ from . import config as cfgmod
 from . import diagnostics as diag
 from . import frames as framemod
 from . import infocard as factmod
+from . import keys as keymod
 from . import tray as traymod
 from . import update as upmod
 from . import update_ui as upd
@@ -80,6 +81,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.painter.ui.info_compact = bool(self.config.info_compact)
         # 信息卡上那些能点的东西（命中、跳过去看、摊开数据）住在 infocard.py
         self.info = factmod.InfoCard(self)
+        # 键盘（空格 / C / R / 左右 / Home / Esc）与"焦点该在画面上"住在 keys.py
+        self.keys = keymod.Keys(self)
         # 重绘交给帧时钟（见 frames.FrameDriver）：帧率上限由 config.frame_rate 决定，
         # 菜单里可以按终端性能调（都得住在这儿，动作表里要引用它们）
         self.frames = framemod.FrameDriver(self)
@@ -241,10 +244,12 @@ class ChuangWindow(Adw.ApplicationWindow):
         # 快捷键；老老实实用 EventControllerKey + 捕获阶段，并在开窗时把焦点交给
         # 画面本身（否则默认焦点可能停在标题栏的按钮上，空格按下去像是在按按钮）。
         keys = Gtk.EventControllerKey()
-        keys.connect("key-pressed", self._on_key)
+        keys.connect("key-pressed", self.keys.on_key)
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         self.add_controller(keys)
         self.connect("map", lambda *_: (self.area.grab_focus(), False)[1])
+        # 焦点会跑到"别的画布"上去（菜单弹层关掉之后最典型），见 keys.Keys
+        self.keys.attach_handlers()
 
         self.title_widget = Adw.WindowTitle(title="窗", subtitle="")
         header = Adw.HeaderBar()
@@ -267,6 +272,9 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic",
                                           menu_model=menu, tooltip_text="更多")
         self.menu_button.set_focus_on_click(False)
+        # 菜单弹层关掉之后焦点会留在弹层里那颗小按钮上（见 keys.Keys.focus_canvas）
+        GLib.idle_add(lambda: (self.keys.hook_menu_popover(self.menu_button),
+                               False)[1])
         header.pack_end(self.menu_button)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -309,6 +317,7 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.menu_button.set_menu_model(self.menu_model)
         if getattr(self, "tray", None) is not None:
             self.tray.reload(self.menu_model)
+        self.keys.hook_menu_popover(self.menu_button)
 
     def request_quit(self) -> None:
         """真的退出（不是最小化到托盘）。安装完新版、点了「退出」都走这里。"""
@@ -608,8 +617,18 @@ class ChuangWindow(Adw.ApplicationWindow):
             if ui.preview_dt is None:
                 ui.preview_started = self._now()
             ui.preview_dt = when
+            # 这一天的天气得是真的：手上那份预报里没有它，就去问一次
+            # （同一天 20 秒内只问一遍，拖动长卷不会把接口刷爆）
+            self.weather.watch(when)
         self._scene_key = None
         self.area.queue_draw()
+
+    def preview_note(self, when) -> str:
+        """"跳过去看"的那句话：别的日子要看清楚是**哪一天**。"""
+        today = self._now().date()
+        if when.date() == today:
+            return f"正在看 {when:%H:%M} 的窗外 · Esc 回到此刻"
+        return f"正在看 {when:%m-%d %H:%M} 的窗外 · Esc 回到此刻"
 
     def _act_goto_datetime(self, *_):
         """选一个日期 + 时刻跳过去（比来回拖长卷省事）。"""
@@ -710,6 +729,9 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.weather.maybe_refresh()
         self.wallpaper.tick(now)
         self.frames.watchdog(now)             # 帧时钟万一没在走，兜底补一次重绘
+        # 正在看的那一天（预览时是预览日）如果还没有真预报，就去补一次：
+        # 拖动长卷时可能正忙、被限流跳过，心跳会接着把它补齐。
+        self.weather.watch(self.painter.ui.preview_dt or clock)
         return True
 
     # ------------------------------------------------------------------
@@ -723,6 +745,9 @@ class ChuangWindow(Adw.ApplicationWindow):
 
     def _on_motion(self, _c, x, y):
         ui = self.painter.ui
+        if self.is_active():
+            # 鼠标回到窗里 → 焦点也回到画面（"窗口在最前面但没有键盘"那种情况）
+            self.keys.focus_canvas()
         if ui.dragging:
             t = self.painter.ribbon_time_at(ui, x)
             if t is not None:
@@ -758,6 +783,7 @@ class ChuangWindow(Adw.ApplicationWindow):
 
     def _on_press(self, gesture, _n, x, y):
         ui = self.painter.ui
+        self.keys.focus_canvas()      # 手指点在画上，键盘也就该属于这幅画
         tx, ty, tw, th = ui.toast_rect
         if tw > 0 and tx <= x <= tx + tw and ty <= y <= ty + th:
             if ui.toast_detail:
@@ -797,56 +823,6 @@ class ChuangWindow(Adw.ApplicationWindow):
         step = 10 if dy > 0 else -10
         self._set_preview(base + timedelta(minutes=step))
         return True
-
-    # ---- 快捷键（窗口捕获阶段的键盘控制器）----------------------------
-    def _key_info(self):
-        """空格：显示 / 隐藏「此刻的事实」。
-
-        顺带把菜单（与托盘）里那一项「显示此刻的事实」的勾同步上——
-        不然用空格关掉卡片之后，菜单里那个勾还挂着。
-        """
-        # 和菜单里那一项是同一个处理（infocard.InfoCard.act_show）
-        self.set_toggle("info", not self.painter.ui.show_info)
-        return True
-
-    def _key_escape(self):
-        ui = self.painter.ui
-        if ui.preview_dt is not None:
-            self._set_preview(None)
-            return True
-        if self.is_fullscreen():
-            self.unfullscreen()
-            return True
-        return False
-
-    def _key_home(self):
-        self._set_preview(None)
-        return True
-
-    def _key_step(self, minutes: int):
-        from datetime import timedelta
-        ui = self.painter.ui
-        base = ui.preview_dt or ui.hover_dt or self._now()
-        self._set_preview(base + timedelta(minutes=minutes))
-        return True
-
-    def _on_key(self, _c, keyval, _code, _state):
-        name = Gdk.keyval_name(keyval)
-        if name == "space":
-            return self._key_info()
-        if name in ("c", "C"):
-            self.set_toggle("info_compact", not self.config.info_compact)
-            return True
-        if name in ("r", "R"):
-            self.info.refresh_weather()
-            return True
-        if name == "Escape":
-            return self._key_escape()
-        if name in ("Home", "KP_Home"):
-            return self._key_home()
-        if name in ("Left", "Right", "KP_Left", "KP_Right"):
-            return self._key_step(-10 if "Left" in name else 10)
-        return False
 
     # ------------------------------------------------------------------
     def _on_weather(self, weather):

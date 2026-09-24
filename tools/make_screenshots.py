@@ -50,7 +50,10 @@ def main() -> None:
         hh, mm = (int(x) for x in clock.split(":"))
         when = day.replace(hour=hh, minute=mm)
         engine.set_location(lat, lon, "Asia/Shanghai")
-        weather = Weather(ok=True, fetched_at=0.0, code=code, cloud=cloud,
+        # fetched_at 给个"几分钟前"的值：卡片底下那行会写"天气更新于 19:05"
+        # （设成 0 的话这一行会退成"天气 · Open-Meteo"，看不出新功能）
+        weather = Weather(ok=True, fetched_at=when.timestamp() - 300.0,
+                          code=code, cloud=cloud,
                           wind_speed=wind, wind_dir=wdir, temp=19.0, apparent=19.0,
                           humidity=70.0,
                           precip=2.0 if code in (63, 65, 95) else 0.0,

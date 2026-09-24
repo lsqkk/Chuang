@@ -24,6 +24,22 @@ DEFAULT_INTERVAL = 10
 # 偶尔真的换一次 URI，兜底那种"shell 的监听链路断了"的极端情况）
 FLIP_EVERY = 300.0
 
+# 壁纸上那张「此刻的事实」的版式说明（值见 config.INFO_MODES）
+INFO_MODE_TEXT = {"follow": "跟窗口一致", "slim": "精简一条", "full": "完整版"}
+
+
+def info_compact_for(mode: str, window_compact: bool) -> bool:
+    """"壁纸上的信息卡要不要精简"——由设置与窗口此刻的样子一起决定。
+
+    以前壁纸上永远是完整版：窗口收成一条了，桌面上的卡片还摊着（反过来也
+    一样，只能在应用里收）。所以这里给三档：跟随窗口 / 永远精简 / 永远完整。
+    """
+    if mode == "slim":
+        return True
+    if mode == "full":
+        return False
+    return bool(window_compact)          # follow（默认）与认不出的值都按"跟随"
+
 
 class WallpaperController:
     """窗口的壁纸管家。构造时就把渲染线程（Worker）收进自己手里。"""
@@ -54,6 +70,11 @@ class WallpaperController:
         """壁纸上要不要带「此刻的事实」与「今日天色」长卷。"""
         return (bool(self.config.wallpaper_show_info),
                 bool(self.config.wallpaper_show_ribbon))
+
+    def compact(self) -> bool:
+        """壁纸上的信息卡要不要精简（跟随窗口 / 精简 / 完整，见 config.INFO_MODES）。"""
+        return info_compact_for(self.config.wallpaper_info_mode,
+                                bool(self.win.painter.ui.info_compact))
 
     def _render_target(self):
         """渲染用的一致性参数：地点、屏幕、天气（关掉天气时是 None）。"""
@@ -95,6 +116,7 @@ class WallpaperController:
             return
         self.remember()
         show_info, show_ribbon = self.opts()
+        compact = self.compact()
         size, weather, weather_off = self._render_target()
         # 写哪一张？**写桌面此刻正在显示的那一张**。
         #
@@ -115,7 +137,7 @@ class WallpaperController:
         self.worker.render_now(
             self.win.engine.local_now(), weather, show_info, show_ribbon, size, slot,
             lambda ok, msg, slot: self._done(ok, msg, slot, quiet),
-            adopt=adopt, weather_off=weather_off)
+            adopt=adopt, weather_off=weather_off, compact=compact)
         if not quiet:
             self.win.toast("正在把这扇窗挂到桌面上…", 2.0)
 
@@ -206,6 +228,16 @@ class WallpaperController:
             self.apply(quiet=True)
         self.win.toast("壁纸上会带上「此刻的事实」" if want else "壁纸只留下景色", 3.5)
 
+    def act_info_mode(self, value: str):
+        """壁纸上那张卡要哪种版式：跟随窗口 / 精简一条 / 完整版。"""
+        self.config.wallpaper_info_mode = value
+        self.config.save()
+        if self.config.wallpaper_auto:
+            self.apply(quiet=True)
+        text = INFO_MODE_TEXT.get(value, "跟窗口一致")
+        note = "（窗口收成一条，壁纸也跟着收）" if value == "follow" else ""
+        self.win.toast(f"壁纸上的信息卡：{text}{note}", 3.5)
+
     def act_ribbon(self, want: bool):
         self.config.wallpaper_show_ribbon = want
         self.config.save()
@@ -220,12 +252,13 @@ class WallpaperController:
             return
         self.remember()
         show_info, show_ribbon = self.opts()
+        compact = self.compact()
         size, weather, weather_off = self._render_target()
         self.win.toast("正在画这一天的 96 张天色，约二十秒…", 6.0)
         self.worker.render_day(self.win.engine.local_date(), weather,
                                show_info, show_ribbon, size, 96,
                                self._progress, self._day_done,
-                               weather_off=weather_off)
+                               weather_off=weather_off, compact=compact)
 
     def _progress(self, done: int, total: int) -> bool:
         self.win.painter.ui.toast = f"正在画今天的天色 {done}/{total}"

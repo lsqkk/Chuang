@@ -13,6 +13,7 @@
 
 import hashlib
 import importlib.util
+import time as _time
 import unittest
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -55,6 +56,19 @@ def _weather(code: int = 63, cloud: float = 95.0) -> Weather:
     base = DAY.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
     for i in range(24):
         w.hourly.append(HourPoint(base + timedelta(hours=i), cloud, code, 18.0, 60.0))
+    return w
+
+
+def _weather_from(start: datetime, hours: int = 72, code: int = 63,
+                  cloud: float = 95.0, fetched_at: float | None = None) -> Weather:
+    """从 start 那一刻起 hours 小时的真实预报（用来测"今天"那一套排版/文案）。"""
+    w = Weather(ok=True, fetched_at=_time.time() if fetched_at is None else fetched_at,
+                code=code, cloud=cloud, wind_speed=9.0, wind_dir=200.0, temp=18.0,
+                apparent=17.0, humidity=80.0, precip=2.0, visibility=9000.0)
+    base = start.replace(tzinfo=None, minute=0, second=0, microsecond=0)
+    for i in range(hours):
+        w.hourly.append(HourPoint(base + timedelta(hours=i), cloud, code, 18.0, 60.0))
+    w.invalidate()
     return w
 
 
@@ -104,6 +118,18 @@ class TestFactRows(unittest.TestCase):
         self.assertIn("关掉了", disabled["窗外"].value)
         self.assertNotIn("未联网", disabled["窗外"].value)
 
+    def test_days_we_have_no_forecast_for_say_so(self):
+        """跳到预报范围以外的日子：卡片要老实说没有，不许拿邻天顶上去。"""
+        rows = self._rows(when=DAY + timedelta(days=3), weather=_weather())
+        self.assertIn("预报", {r.label: r for r in rows}["窗外"].value)
+        scene = self.engine.build(DAY + timedelta(days=3), _weather(),
+                                  location_label="西安")
+        self.assertTrue(scene.weather_nodata)
+        self.assertFalse(scene.has_weather)
+        # 这一天有预报的时候就不会这么说
+        self.assertFalse(self.engine.build(DAY, _weather(),
+                                           location_label="西安").weather_nodata)
+
 
 @unittest.skipUnless(HAS_STACK, "没有 pycairo / PyGObject，跳过")
 class TestInfoCardDrawing(unittest.TestCase):
@@ -135,6 +161,15 @@ class TestInfoCardDrawing(unittest.TestCase):
             self.assertGreaterEqual(y, 0)
             self.assertLessEqual(x + rw, 1000)
             self.assertLessEqual(y + rh, 640)
+
+    def test_a_day_without_a_forecast_still_draws_a_sane_card(self):
+        """跳到一个还没有预报的日子：卡片照画，只是那一行换成"还没有预报"。"""
+        self._draw(when=DAY + timedelta(days=6), weather=_weather())
+        kinds = [r[4] for r in self.painter.ui.info_rects]
+        self.assertIn("toggle", kinds)
+        self.assertIn("refresh", kinds)
+        values = " ".join(getattr(r, "value", "") for r in self.painter.ui.info_rows)
+        self.assertIn("预报", values)
 
     def test_compact_mode_keeps_only_the_headline(self):
         self._draw(weather=_weather(), compact=True)
@@ -214,6 +249,73 @@ class TestInfoCardDrawing(unittest.TestCase):
         row = next(i for i, r in enumerate(painter.ui.info_rects) if r[4] == "open")
         self.assertNotEqual(base, self._card_pixels(weather=_weather(), info_hover=row),
                             "鼠标停在哪一行没画出来")
+
+    def test_cache_key_notices_the_weather_time(self):
+        """"天气更新于"那一行是看得见的字，时间一变卡片就得重画。"""
+        today = datetime.now(TZ).replace(hour=12, minute=0, second=0, microsecond=0)
+        fresh = _weather_from(today.replace(hour=0), fetched_at=_time.time())
+        older = _weather_from(today.replace(hour=0), fetched_at=_time.time() - 3600)
+        self.assertNotEqual(self._card_pixels(when=today, weather=fresh),
+                            self._card_pixels(when=today, weather=older),
+                            "天气更新于的时间变了，卡片还停在旧的那一行上")
+
+
+@unittest.skipUnless(HAS_STACK, "没有 pycairo / PyGObject，跳过")
+class TestCardFootLine(unittest.TestCase):
+    """卡片底下那一行：跟着真实天气时要写清楚"天气更新于几点"。
+
+    以前这一行只有一句固定文案（"天气 · Open-Meteo"），看的人根本没法判断
+    窗上这份天气是刚刚问回来的，还是上个星期缓存下来的。
+    """
+
+    def setUp(self):
+        self.painter = SkyPainter(seed=7)
+        self.engine = _engine()
+        self.tz = ZoneInfo("Asia/Shanghai")
+        self.surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1200, 800)
+        self.cr = cairo.Context(self.surf)
+
+    def _scene(self, when, weather):
+        return self.engine.build(when, weather, location_label="西安 · 陕西省")
+
+    def test_while_following_the_real_weather_it_shows_the_time(self):
+        now = datetime.now(self.tz).replace(microsecond=0)
+        scene = self._scene(now, _weather_from(now.replace(hour=0)))
+        self.assertTrue(scene.weather_now)
+        stamp = self.painter._weather_stamp(scene)
+        self.assertRegex(stamp, r"^\d{2}:\d{2}$")
+        near = {now.strftime("%H:%M"),
+                (now + timedelta(minutes=1)).strftime("%H:%M")}
+        self.assertIn(stamp, near)
+        foot = self.painter._foot_text(scene, self.cr, 320.0, 10.0)
+        self.assertIn("更新于", foot)
+        self.assertIn(stamp, foot)
+
+    def test_a_narrow_card_says_less_instead_of_running_under_the_button(self):
+        now = datetime.now(self.tz).replace(microsecond=0)
+        scene = self._scene(now, _weather_from(now.replace(hour=0)))
+        wide = self.painter._foot_text(scene, self.cr, 340.0, 10.0)
+        narrow = self.painter._foot_text(scene, self.cr, 120.0, 10.0)
+        self.assertGreater(len(wide), len(narrow))
+        width = __import__("chuang.render", fromlist=["draw_text"]).draw_text(
+            self.cr, narrow, 0, -1000, 10.0, (255, 255, 255), 0.0)[0]
+        self.assertLessEqual(width, 120.0, "连最短的那句都放不下")
+
+    def test_a_stale_fetch_from_another_day_carries_the_date(self):
+        now = datetime.now(self.tz).replace(microsecond=0)
+        old = _time.time() - 86400 * 2
+        scene = self._scene(now, _weather_from(now.replace(hour=0), fetched_at=old))
+        stamp = self.painter._weather_stamp(scene)
+        self.assertRegex(stamp, r"^\d{2}-\d{2} \d{2}:\d{2}$")
+        self.assertIn(stamp, self.painter._foot_text(scene, self.cr, 400.0, 10.0))
+
+    def test_offline_looks_different_from_fresh(self):
+        now = datetime.now(self.tz).replace(microsecond=0)
+        weather = _weather_from(now.replace(hour=0))
+        weather.stale = True
+        scene = self._scene(now, weather)
+        self.assertTrue(scene.weather_stale)
+        self.assertIn("上次", self.painter._foot_text(scene, self.cr, 400.0, 10.0))
 
 
 @unittest.skipUnless(HAS_STACK, "没有 pycairo / PyGObject，跳过")

@@ -74,6 +74,9 @@ class Scene:
     has_weather: bool = False
     weather_disabled: bool = False  # 用户自己把「跟随真实天气」关掉了
     weather_stale: bool = False
+    weather_nodata: bool = False    # 这一天的预报还没拿到（远的日子 / 没联网）
+    weather_now: bool = False       # 画面这一刻就是此刻（不是跳到别的时候）
+    weather_at: float = 0.0         # 手上这份天气是什么时候问回来的（epoch）
     cloud: float = 0.0
     code: int = 0
     weather_text: str = ""
@@ -227,21 +230,45 @@ class SkyEngine:
         )
 
         if weather is not None and weather.ok:
-            sc.has_weather = True
-            sc.weather_stale = weather.stale
-            sc.cloud = weather.cloud_at(when)
-            sc.code = weather.code_at(when)
-            from .weather import code_text, is_fog, is_thunder, precip_kind, precip_strength
-            sc.weather_text = code_text(sc.code)
-            sc.temp = weather.temp
-            sc.apparent = weather.apparent
-            sc.humidity = weather.humidity
-            sc.wind_speed = weather.wind_speed
-            sc.wind_dir = weather.wind_dir
-            sc.precip_kind = precip_kind(sc.code)
-            sc.precip_strength = precip_strength(sc.code, weather.precip if not preview else 0.0)
-            sc.thunder = is_thunder(sc.code)
-            sc.fog = is_fog(sc.code)
+            day = when.date()
+            today = self.local_now().date()
+            # 逐小时表是空的（很老的缓存、调试用的假天气）时，手上只有"此刻"
+            # 那一份读数——那就当它只覆盖今天，别把画面变成"没有天气"。
+            hourly = bool(weather.hourly)
+            if weather.has_day(day) if hourly else (day == today):
+                # 有这一天的逐小时预报：云、天气现象、气温都按**那一刻**来。
+                # 以前不管看的是哪一天，气温都显示"此刻"的读数，跳到三天后
+                # 也还是现在这个度数——那是假的。
+                from .weather import (code_text, is_fog, is_thunder, precip_kind,
+                                      precip_strength)
+                sc.has_weather = True
+                sc.weather_now = (day == today)
+                sc.weather_at = float(getattr(weather, "fetched_at", 0.0) or 0.0)
+                # "离线"只对"此刻"这几个读数有意义：别的日子本来就是预报
+                sc.weather_stale = bool(weather.stale) and sc.weather_now
+                cloud = weather.cloud_at(when) if hourly else weather.cloud
+                code = weather.code_at(when) if hourly else weather.code
+                sc.cloud = cloud if cloud is not None else 0.0
+                sc.code = code if code is not None else 0
+                sc.weather_text = code_text(sc.code)
+                temp = weather.temp_at(when) if hourly else weather.temp
+                sc.temp = temp if temp is not None else weather.temp
+                if sc.weather_now:
+                    # 体感 / 湿度 / 风只有"此刻"这一份（逐小时接口里没有）
+                    sc.apparent = weather.apparent
+                    sc.humidity = weather.humidity
+                    sc.wind_speed = weather.wind_speed
+                    sc.wind_dir = weather.wind_dir
+                mm = weather.precip_at(when) if hourly else weather.precip
+                if sc.weather_now and not preview:
+                    mm = weather.precip          # 此时此刻真正在下多少
+                sc.precip_kind = precip_kind(sc.code)
+                sc.precip_strength = precip_strength(sc.code, mm or 0.0)
+                sc.thunder = is_thunder(sc.code)
+                sc.fog = is_fog(sc.code)
+            else:
+                # 这一天的预报还没问回来：老实说没有，别拿邻天顶替
+                sc.weather_nodata = True
         elif weather_off:
             # "没有天气"和"你关掉了天气"是两回事：前者要写"未联网"，
             # 后者写成"未联网"会把用户指去检查网络。让画面知道这个区别。
@@ -252,15 +279,19 @@ class SkyEngine:
     def ribbon(self, day: datetime, weather: Weather | None) -> list[tuple[datetime, tuple[float, float, float]]]:
         base = day.replace(hour=0, minute=0, second=0, microsecond=0)
         steps = 288  # 每 5 分钟一格
+        covered = bool(weather is not None and weather.ok and weather.hourly)
         out = []
         for i in range(steps):
             t = base + timedelta(minutes=i * 5)
             alt, _ = A.sun_altaz(A.to_utc(t), self.lat, self.lon)
-            cloud = weather.cloud_at(t) if (weather is not None and weather.ok) else 0.0
-            if weather is not None and weather.ok:
+            cloud = 0.0
+            if covered:
                 from .weather import precip_kind
+                cloud = weather.cloud_at(t)
+                cloud = weather.cloud if cloud is None else cloud
                 code = weather.code_at(t)
-                cloud = max(cloud, 55.0 if precip_kind(code) != "none" else cloud)
+                if code is not None and precip_kind(code) != "none":
+                    cloud = max(cloud, 55.0)
             out.append((t, ribbon_color(alt, cloud)))
         return out
 

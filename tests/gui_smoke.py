@@ -24,8 +24,10 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from datetime import timedelta
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -70,7 +72,8 @@ EXPECTED_TOGGLES = {
     "autostart", "autostarthidden",
     "wallpaperauto", "wallpaperinfo", "wallpaperribbon", "autoupdate",
 }
-EXPECTED_RADIOS = {"closebehavior", "wallpaperinterval", "framerate"}
+EXPECTED_RADIOS = {"closebehavior", "wallpaperinterval", "wallpaperinfomode",
+                   "framerate"}
 
 # ---- 动作清单：每个动作要么"能安全激活"，要么"写明为什么不激活 -------------
 # 加新动作时必须二选一，否则测试会失败——这样就不会有人悄悄加一个
@@ -114,6 +117,7 @@ NOT_ACTIVATED = {
     "win.wallpaperday": "要画 96 帧、还会写桌面设置",
     "win.wallpaperinfo": "会写用户的桌面设置",
     "win.wallpaperribbon": "会写用户的桌面设置",
+    "win.wallpaperinfomode": "壁纸跟着此刻时会立刻重画、写用户的桌面设置",
     "win.wallpaperrestore": "会改回用户的壁纸设置",
 }
 
@@ -346,6 +350,180 @@ def main() -> int:
         if any(k in ("open", "arc", "detail") for k in slim):
             problems.append(f"精简模式下还画了事实行：{slim}")
 
+        # 7b-2) 右上角那颗"收起/展开"：**点它**要真的收起来。
+        #       1.1.9 死在这里——处理器写的是 set_toggle("info_compact")，
+        #       而注册的动作叫 infocompact，lookup 找不到就静默返回，
+        #       于是"点了没反应"。这里直接照鼠标点击那条路走一遍。
+        win.set_toggle("infocompact", False)
+        win.painter.draw(cr, 1000, 640, sc, 180.0)
+        toggle = next((i for i, r in enumerate(win.painter.ui.info_rects)
+                       if r[4] == "toggle"), -1)
+        results["info_toggle_rect"] = toggle
+        if toggle < 0:
+            problems.append("信息卡上没有可点的收起/展开发方块")
+        else:
+            rect = win.painter.ui.info_rects[toggle]
+            win.info.activate(toggle, rect[0] + rect[2] / 2)
+            click_compact = bool(win.config.info_compact and win.painter.ui.info_compact)
+            results["info_toggle_click"] = click_compact
+            if not click_compact:
+                problems.append("点信息卡右上角没有收起（动作名对不上？）")
+            win.painter.draw(cr, 1000, 640, sc, 180.0)
+            back = next((i for i, r in enumerate(win.painter.ui.info_rects)
+                         if r[4] == "toggle"), -1)
+            win.info.activate(back, win.painter.ui.info_rects[back][0] + 5)
+            results["info_toggle_click_back"] = bool(win.config.info_compact)
+            if win.config.info_compact:
+                problems.append("再点一次没有展开回来")
+
+        # 7b-3) 快捷键：空格 / C / 左右 / R。以前是"事件送进来了没人接"
+        #       （焦点留在菜单弹层里那颗小按钮上），现在至少处理器这一层
+        #       必须真的动起来——按下键盘走的就是这个函数。
+        from gi.repository import Gdk as _Gdk
+
+        def press(name):
+            return win.keys.on_key(None, _Gdk.keyval_from_name(name), 0, 0)
+
+        win.set_toggle("info", True)
+        handled_space = press("space")
+        results["key_space"] = [handled_space, bool(win.painter.ui.show_info)]
+        if not handled_space or win.painter.ui.show_info:
+            problems.append("空格没有收起信息卡")
+        press("space")
+        if not win.painter.ui.show_info:
+            problems.append("再按空格没有把信息卡放回来")
+        win.set_toggle("infocompact", False)
+        handled_c = press("c")
+        results["key_c"] = [handled_c, bool(win.config.info_compact)]
+        if not handled_c or not win.config.info_compact:
+            problems.append("C 键没有切到精简模式（动作名对不上？）")
+        press("c")
+        win._set_preview(None)
+        press("Right")
+        results["key_right"] = str(win.painter.ui.preview_dt)
+        if win.painter.ui.preview_dt is None:
+            problems.append("右方向键没有进入预览")
+        win._set_preview(None)
+        press("Home")
+        # R：重问一次天气——问出去是一句话，问完了（成功或失败）还得再说一句
+        win.set_toggle("weather", True)
+        win.painter.ui.toast = ""
+        if not press("r"):                       # R 要接得上
+            problems.append("R 键没有接上")
+        results["key_r_toast"] = win.painter.ui.toast
+        if "问" not in (win.painter.ui.toast or ""):
+            problems.append("按 R 没有任何回声（成功 / 失败都该说一句）")
+
+        # 7b-4) 焦点必须留在"这幅画"上。菜单弹层关掉之后焦点会留在弹层里
+        #       那颗小按钮上，那块画布跟窗不是同一块——键盘事件就此没有了
+        #       回声，看起来就是"窗口在最前面却按不动"。这里钉住这条状态。
+        def pump(seconds: float, until=None) -> None:
+            """把主循环转一会儿（弹层开/关要几帧才走完）。嵌套 iteration 没问题。"""
+            end = time.monotonic() + seconds
+            ctx = GLib.MainContext.default()
+            while time.monotonic() < end:
+                while ctx.pending():
+                    ctx.iteration(False)
+                if until is not None and until():
+                    return
+                time.sleep(0.02)
+
+        win.menu_button.popup()
+        pump(0.4)
+        win.menu_button.popdown()
+        pump(0.4)
+        focused = win.get_focus()
+        same = focused is not None and focused.get_native() is win.get_native()
+        results["focus_after_menu"] = f"{type(focused).__name__}·同画布={same}"
+        if focused is not win.area:
+            problems.append(f"菜单关掉之后焦点没回到画面上：{type(focused).__name__}")
+
+        # 7b-5) 壁纸上的信息卡版式：跟随窗口 / 精简 / 完整
+        from chuang.wallpaper_ctl import info_compact_for
+        results["wallpaper_info_modes"] = {
+            "follow": [info_compact_for("follow", True),
+                       info_compact_for("follow", False)],
+            "slim": [info_compact_for("slim", True), info_compact_for("slim", False)],
+            "full": [info_compact_for("full", True), info_compact_for("full", False)],
+        }
+        if results["wallpaper_info_modes"] != {"follow": [True, False],
+                                              "slim": [True, True],
+                                              "full": [False, False]}:
+            problems.append(f"壁纸信息卡的三档没对上：{results['wallpaper_info_modes']}")
+        win.activate("wallpaperinfomode", GLib.Variant.new_string("slim"))
+        if win.config.wallpaper_info_mode != "slim" or not win.wallpaper.compact():
+            problems.append("壁纸信息卡版式没有写进配置")
+        win.activate("wallpaperinfomode", GLib.Variant.new_string("follow"))
+        if win.config.wallpaper_info_mode != "follow":
+            problems.append("壁纸信息卡版式改回'跟随'失败")
+
+        # 7b-6) 预览到远处的一天：那天必须**真的去问一次**，问回来的要并进手里
+        #       这份；同时"此刻"那份不能被顶掉（这是 1.1.11 的天气改造）。
+        import chuang.weather as wmod
+        from datetime import datetime as _dt, time as _dtime
+        today = win._now().date()
+        far = today + timedelta(days=9)
+        asked: list = []
+
+        def fake_fetch(lat, lon, tz="auto", start_date=None, end_date=None,
+                       forecast_days=7):
+            asked.append((start_date, end_date))
+            first = start_date or today
+            last = end_date or (today + timedelta(days=forecast_days - 1))
+            w = wmod.Weather(ok=True, fetched_at=time.time(), code=3, cloud=88.0,
+                             temp=11.0, apparent=10.0, humidity=70.0, precip=0.0,
+                             lat=lat, lon=lon)
+            day = first
+            while day <= last:
+                base = _dt.combine(day, _dtime(0, 0))
+                for h in range(24):
+                    w.hourly.append(wmod.HourPoint(base + timedelta(hours=h), 88.0,
+                                                   3, 11.0, 40.0))
+                day += timedelta(days=1)
+            w.invalidate()
+            return w
+
+        allow = win.weather.allow_fetch
+        win.weather.allow_fetch = False          # 先别让它去碰真网络
+        pump(14, until=lambda: not win.weather._busy)
+        with mock.patch.object(wmod, "fetch", side_effect=fake_fetch):
+            win.weather.allow_fetch = True
+            win.weather.refresh(force=True)
+            pump(6, until=lambda: bool(win.weather.weather
+                                       and win.weather.weather.has_day(today)))
+            results["weather_days_after_first"] = (
+                win.weather.weather.day_span() if win.weather.weather else None)
+            tzinfo = win._now().tzinfo
+            win._set_preview(_dt.combine(far, _dtime(14, 0), tzinfo=tzinfo))
+            pump(6, until=lambda: bool(win.weather.weather
+                                       and win.weather.weather.has_day(far)))
+            # JSON 里放字符串（date 不能直接序列化）
+            results["weather_asked_for_far"] = [
+                str(x) for x in asked[-1] if x is not None] if asked else None
+            far_scene = win._current_scene()
+            results["far_preview"] = [far_scene.has_weather, far_scene.weather_now,
+                                      round(far_scene.cloud), far_scene.weather_nodata]
+            if not far_scene.has_weather or far_scene.weather_now \
+                    or far_scene.weather_nodata:
+                problems.append(f"跳到 {far} 之后那天的天气还是不对："
+                                f"{results['far_preview']}")
+            win._set_preview(None)
+            now_scene = win._current_scene()
+            results["now_after_preview"] = [now_scene.has_weather,
+                                            now_scene.weather_now]
+            if not now_scene.has_weather or not now_scene.weather_now:
+                problems.append("从预览回到此刻之后，天气没了（被补问那份顶掉了？）")
+            # 真的没有那天的数据时（超出预报范围），画面要老实说"没有预报"
+            past_limit = today + timedelta(days=40)
+            win._set_preview(_dt.combine(past_limit, _dtime(14, 0), tzinfo=tzinfo))
+            nodata_scene = win._current_scene()
+            results["beyond_forecast"] = [nodata_scene.has_weather,
+                                          nodata_scene.weather_nodata]
+            if nodata_scene.has_weather or not nodata_scene.weather_nodata:
+                problems.append("40 天以后的日子还画着天气（应该是'这天还没有预报'）")
+            win._set_preview(None)
+        win.weather.allow_fetch = allow
+
         # 7c) 帧率可调：选一个就得记下来，而且立刻按新节奏走
         win.activate("framerate", GLib.Variant.new_string("120"))
         results["framerate_120"] = win.config.frame_rate
@@ -405,7 +583,8 @@ def main() -> int:
 
     GLib.timeout_add_seconds(6, probe)
     # 兜底：万一连探针都没被调到（窗口没建起来之类），十秒后也要退出
-    GLib.timeout_add_seconds(10, lambda: (problems.append("超时：探针没有跑完"),
+    # 兜底：探针里有"等上一次联网抓取结束"这种等待，给宽一点
+    GLib.timeout_add_seconds(30, lambda: (problems.append("超时：探针没有跑完"),
                                           app.quit(), False)[-1])
     app.run([])
 
