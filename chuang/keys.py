@@ -22,7 +22,7 @@ from datetime import timedelta
 import gi
 
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk  # noqa: E402
+from gi.repository import Gdk, GLib  # noqa: E402
 
 from . import actions as actionmod
 
@@ -60,12 +60,22 @@ class Keys:
             pass
 
     def hook_menu_popover(self, button) -> None:
-        """给菜单弹层挂上"关掉了"的回声（弹层是懒创建的，出现之后再挂）。"""
+        """给菜单弹层挂上"关掉了"的回声（弹层是懒创建的，出现之后再挂）。
+
+        收焦点那一下等**弹层拆完**再动（排到 idle 里）：在 "closed" 里面直接
+        grab_focus，等于扎进 GTK 正在拆弹层的过程中——轻则焦点没落上，重则跟
+        X 那边的 grab 收尾纠缠不清。这种"只在某些环境下"的毛病不值得赌。
+        """
         pop = button.get_popover()
         if pop is None or pop is getattr(self, "_hooked_popover", None):
             return
         self._hooked_popover = pop
-        pop.connect("closed", lambda *_: self.focus_canvas())
+
+        def restore(*_args):
+            GLib.idle_add(self.focus_canvas)
+            return False
+
+        pop.connect("closed", restore)
 
     # ---- 按键 --------------------------------------------------------
     def on_key(self, _ctrl, keyval, _code, _state) -> bool:

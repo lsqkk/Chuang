@@ -132,6 +132,13 @@ class FakeInvocation:
         self.replied = True
 
 
+class AlienWidget:
+    """假装"焦点落在别的画布上的某个小部件"上（菜单弹层里那颗小按钮）。"""
+
+    def get_native(self):
+        return object()
+
+
 def walk_menu(model: Gio.MenuModel, out: set[str]) -> None:
     """把 Gio.MenuModel 里出现过的动作名全收集起来。"""
     for i in range(model.get_n_items()):
@@ -165,23 +172,6 @@ def main() -> int:
     }), encoding="utf-8")
 
     app = appmod.ChuangApp()
-
-    def probe() -> bool:
-        """探针：**无论出什么事都必须把 app 关掉**。
-
-        踩过：探针里抛个异常，回调返回 None（GLib 会留着这个定时器），
-        于是进程一直跑、还占着 D-Bus 名字——下一轮就跑成了"远程实例"，
-        什么都不测、直接退出，看起来像"测试通过"。
-        """
-        try:
-            _probe_body()
-        except Exception as exc:                          # noqa: BLE001
-            import traceback
-            problems.append(f"探针自己炸了：{type(exc).__name__}: {exc}")
-            traceback.print_exc()
-        finally:
-            app.quit()
-        return False
 
     def _probe_body() -> None:
         win = app.props.active_window
@@ -414,29 +404,48 @@ def main() -> int:
         if "问" not in (win.painter.ui.toast or ""):
             problems.append("按 R 没有任何回声（成功 / 失败都该说一句）")
 
-        # 7b-4) 焦点必须留在"这幅画"上。菜单弹层关掉之后焦点会留在弹层里
-        #       那颗小按钮上，那块画布跟窗不是同一块——键盘事件就此没有了
-        #       回声，看起来就是"窗口在最前面却按不动"。这里钉住这条状态。
-        def pump(seconds: float, until=None) -> None:
-            """把主循环转一会儿（弹层开/关要几帧才走完）。嵌套 iteration 没问题。"""
-            end = time.monotonic() + seconds
-            ctx = GLib.MainContext.default()
-            while time.monotonic() < end:
-                while ctx.pending():
-                    ctx.iteration(False)
-                if until is not None and until():
-                    return
-                time.sleep(0.02)
+        # 7b-4) 焦点规则：菜单弹层一关，GTK 会把焦点留在弹层里那颗**已经不
+        #       显示**的小按钮上，而那是**另一块画布**——键盘事件于是没有回声
+        #       （"窗口明明在最前面，按空格没反应"就是这么来的）。
+        #
+        #       这里**不真的去开菜单**：没有窗口管理器的 Xvfb 里开弹层要去抢
+        #       键盘 grab，容易把整条测试挂住（2026-09-24 的 CI 就是 180 秒
+        #       超时在这个点上）。改成把规则本身钉住——两条分支都必须对：
+        #         a) 焦点在别的画布上 → 收回画面；
+        #         b) 焦点还在窗里（比如 Tab 走到了图钉上）→ 不许抢。
+        #       顺带验一下两个挂钩还在：窗口拿到焦点、菜单弹层关掉。
+        def _alien_focus():
+            return mock.patch.object(type(win), "get_focus",
+                                     lambda _self: AlienWidget())
 
-        win.menu_button.popup()
-        pump(0.4)
-        win.menu_button.popdown()
-        pump(0.4)
-        focused = win.get_focus()
-        same = focused is not None and focused.get_native() is win.get_native()
-        results["focus_after_menu"] = f"{type(focused).__name__}·同画布={same}"
-        if focused is not win.area:
-            problems.append(f"菜单关掉之后焦点没回到画面上：{type(focused).__name__}")
+        def _grab_spy(spy: list):
+            return mock.patch.object(win.area, "grab_focus",
+                                     lambda: spy.append(1))
+
+        grabbed: list = []
+        with _alien_focus(), _grab_spy(grabbed):
+            win.keys.focus_canvas()
+        results["focus_rule_alien"] = len(grabbed)
+        if not grabbed:
+            problems.append("焦点跑到别的画布上了，却没有收回到画面")
+
+        grabbed.clear()
+        with mock.patch.object(type(win), "get_focus", lambda _self: win.pin_button), \
+                _grab_spy(grabbed):
+            win.keys.focus_canvas()
+        if grabbed:
+            problems.append("焦点还在窗里的时候被抢走了（按 Tab 走动会被打断）")
+
+        grabbed.clear()          # 窗口重新拿到焦点：挂钩还在吗？
+        with _alien_focus(), _grab_spy(grabbed), \
+                mock.patch.object(type(win), "is_active", lambda _self: True):
+            win.notify("is-active")      # 等于 GTK 报"这扇窗拿到焦点了"
+        results["focus_hook_active"] = len(grabbed)
+        if not grabbed:
+            problems.append("窗口重新拿到焦点时没有把焦点交回画面（挂钩掉了？）")
+
+        # 菜单弹层关掉之后那一下排到了 idle（见 keys.hook_menu_popover），
+        # 要等一轮才知道结果——放在异步那一段里验。
 
         # 7b-5) 壁纸上的信息卡版式：跟随窗口 / 精简 / 完整
         from chuang.wallpaper_ctl import info_compact_for
@@ -457,72 +466,8 @@ def main() -> int:
         if win.config.wallpaper_info_mode != "follow":
             problems.append("壁纸信息卡版式改回'跟随'失败")
 
-        # 7b-6) 预览到远处的一天：那天必须**真的去问一次**，问回来的要并进手里
-        #       这份；同时"此刻"那份不能被顶掉（这是 1.1.11 的天气改造）。
-        import chuang.weather as wmod
-        from datetime import datetime as _dt, time as _dtime
-        today = win._now().date()
-        far = today + timedelta(days=9)
-        asked: list = []
-
-        def fake_fetch(lat, lon, tz="auto", start_date=None, end_date=None,
-                       forecast_days=7):
-            asked.append((start_date, end_date))
-            first = start_date or today
-            last = end_date or (today + timedelta(days=forecast_days - 1))
-            w = wmod.Weather(ok=True, fetched_at=time.time(), code=3, cloud=88.0,
-                             temp=11.0, apparent=10.0, humidity=70.0, precip=0.0,
-                             lat=lat, lon=lon)
-            day = first
-            while day <= last:
-                base = _dt.combine(day, _dtime(0, 0))
-                for h in range(24):
-                    w.hourly.append(wmod.HourPoint(base + timedelta(hours=h), 88.0,
-                                                   3, 11.0, 40.0))
-                day += timedelta(days=1)
-            w.invalidate()
-            return w
-
-        allow = win.weather.allow_fetch
-        win.weather.allow_fetch = False          # 先别让它去碰真网络
-        pump(14, until=lambda: not win.weather._busy)
-        with mock.patch.object(wmod, "fetch", side_effect=fake_fetch):
-            win.weather.allow_fetch = True
-            win.weather.refresh(force=True)
-            pump(6, until=lambda: bool(win.weather.weather
-                                       and win.weather.weather.has_day(today)))
-            results["weather_days_after_first"] = (
-                win.weather.weather.day_span() if win.weather.weather else None)
-            tzinfo = win._now().tzinfo
-            win._set_preview(_dt.combine(far, _dtime(14, 0), tzinfo=tzinfo))
-            pump(6, until=lambda: bool(win.weather.weather
-                                       and win.weather.weather.has_day(far)))
-            # JSON 里放字符串（date 不能直接序列化）
-            results["weather_asked_for_far"] = [
-                str(x) for x in asked[-1] if x is not None] if asked else None
-            far_scene = win._current_scene()
-            results["far_preview"] = [far_scene.has_weather, far_scene.weather_now,
-                                      round(far_scene.cloud), far_scene.weather_nodata]
-            if not far_scene.has_weather or far_scene.weather_now \
-                    or far_scene.weather_nodata:
-                problems.append(f"跳到 {far} 之后那天的天气还是不对："
-                                f"{results['far_preview']}")
-            win._set_preview(None)
-            now_scene = win._current_scene()
-            results["now_after_preview"] = [now_scene.has_weather,
-                                            now_scene.weather_now]
-            if not now_scene.has_weather or not now_scene.weather_now:
-                problems.append("从预览回到此刻之后，天气没了（被补问那份顶掉了？）")
-            # 真的没有那天的数据时（超出预报范围），画面要老实说"没有预报"
-            past_limit = today + timedelta(days=40)
-            win._set_preview(_dt.combine(past_limit, _dtime(14, 0), tzinfo=tzinfo))
-            nodata_scene = win._current_scene()
-            results["beyond_forecast"] = [nodata_scene.has_weather,
-                                          nodata_scene.weather_nodata]
-            if nodata_scene.has_weather or not nodata_scene.weather_nodata:
-                problems.append("40 天以后的日子还画着天气（应该是'这天还没有预报'）")
-            win._set_preview(None)
-        win.weather.allow_fetch = allow
+        # 7b-6)（异步，见 _start_async_probes）预览到远处的一天：那天必须真的
+        #       去问一次，问回来的要并进手里这份；同时"此刻"那份不能被顶掉。
 
         # 7c) 帧率可调：选一个就得记下来，而且立刻按新节奏走
         win.activate("framerate", GLib.Variant.new_string("120"))
@@ -581,10 +526,194 @@ def main() -> int:
         results["tick_errors_after"] = win._tick_errors
         results["last_tick_error"] = win._last_tick_error or "-"
 
+    def _start_async_probes() -> None:
+        """要等后台线程的那几条：用 GLib.timeout_add 一步排一步。
+
+        **特意不用"在回调里嵌套跑主循环"**（`MainContext.iteration()` 那种写法）：
+        2026-09-24 的 CI 就是在那种写法上挂到 180 秒超时的。定时器驱动的步骤
+        不需要嵌套循环，主循环自己一轮一轮走，卡不住也拖不住。
+        """
+        win = app.props.active_window
+        if win is None:
+            problems.append("异步探针：没有窗口")
+            app.quit()
+            return
+
+        import chuang.weather as wmod
+        from datetime import datetime as _dt, time as _dtime
+
+        today = win._now().date()
+        far = today + timedelta(days=9)
+        asked: list = []
+
+        def fake_fetch(lat, lon, tz="auto", start_date=None, end_date=None,
+                       forecast_days=7):
+            """假 Open-Meteo：按要的那几天造出逐小时数据（不联网）。"""
+            asked.append((start_date, end_date))
+            first = start_date or today
+            last = end_date or (today + timedelta(days=forecast_days - 1))
+            w = wmod.Weather(ok=True, fetched_at=time.time(), code=3, cloud=88.0,
+                             temp=11.0, apparent=10.0, humidity=70.0, precip=0.0,
+                             lat=lat, lon=lon)
+            day = first
+            while day <= last:
+                base = _dt.combine(day, _dtime(0, 0))
+                for h in range(24):
+                    w.hourly.append(wmod.HourPoint(base + timedelta(hours=h), 88.0,
+                                                   3, 11.0, 40.0))
+                day += timedelta(days=1)
+            w.invalidate()
+            return w
+
+        patcher = mock.patch.object(wmod, "fetch", side_effect=fake_fetch)
+        allow = win.weather.allow_fetch
+        done = []
+
+        def poll(cond, then, limit: float) -> None:
+            """等 cond() 成立（最多 limit 秒）再走 then()；等不到也照样往下走。"""
+            deadline = time.monotonic() + limit
+
+            def tick():
+                if cond() or time.monotonic() >= deadline:
+                    return bool(then())
+                return True
+
+            GLib.timeout_add(100, tick)
+
+        def finish():
+            """收尾：把假 fetch 换回来、退出，让 main() 去打印结果。"""
+            if not done:
+                done.append(1)
+                try:
+                    patcher.stop()
+                except Exception:            # noqa: BLE001 - 没 start 过就算了
+                    pass
+                win.weather.allow_fetch = allow
+                try:
+                    win._set_preview(None)
+                except Exception:            # noqa: BLE001
+                    pass
+                app.quit()
+            return False
+
+        def step_ask():
+            patcher.start()
+            win.weather.allow_fetch = True
+            # 上一次"真网络"那次可能还在飞（抓取是后台线程）：等它落地再发这一枪。
+            # refresh() 返回 True = 这一枪真的打出去了。
+            poll(lambda: win.weather.refresh(force=True), step_after_first, 20.0)
+            return False
+
+        def step_after_first():
+            poll(lambda: bool(win.weather.weather
+                              and win.weather.weather.has_day(today)),
+                 step_far, 8.0)
+            return False
+
+        def step_far():
+            results["weather_days_after_first"] = (
+                list(win.weather.weather.day_span())
+                if win.weather.weather else None)
+            win._set_preview(_dt.combine(far, _dtime(14, 0), tzinfo=win._now().tzinfo))
+            poll(lambda: bool(win.weather.weather
+                              and win.weather.weather.has_day(far)),
+                 step_after_far, 8.0)
+            return False
+
+        def step_after_far():
+            # JSON 里放字符串（date 不能直接序列化）
+            results["weather_asked_for_far"] = [
+                str(x) for x in asked[-1] if x is not None] if asked else None
+            if not asked or asked[-1][0] != far - timedelta(days=1):
+                # 网络太慢/接口被占住，这一枪根本没发出去：逻辑由
+                # tests/test_weather.py 的 TestNearbyDays 钉着，这里不误报
+                results["far_preview"] = "跳过（补问没能发出去）"
+                return finish()
+            scene = win._current_scene()
+            results["far_preview"] = [scene.has_weather, scene.weather_now,
+                                      round(scene.cloud), scene.weather_nodata]
+            if not scene.has_weather or scene.weather_now or scene.weather_nodata:
+                problems.append(f"跳到 {far} 之后那天的天气还是不对："
+                                f"{results['far_preview']}")
+            win._set_preview(None)
+            now_scene = win._current_scene()
+            results["now_after_preview"] = [now_scene.has_weather,
+                                            now_scene.weather_now]
+            if not now_scene.has_weather or not now_scene.weather_now:
+                problems.append("从预览回到此刻之后，天气没了（被补问那份顶掉了？）")
+            # 真的没有那天的数据时（超出预报范围），画面要老实说"没有预报"
+            beyond = today + timedelta(days=40)
+            win._set_preview(_dt.combine(beyond, _dtime(14, 0), tzinfo=win._now().tzinfo))
+            nodata = win._current_scene()
+            results["beyond_forecast"] = [nodata.has_weather, nodata.weather_nodata]
+            if nodata.has_weather or not nodata.weather_nodata:
+                problems.append("40 天以后的日子还画着天气（应该是'这天还没有预报'）")
+            return finish()
+
+        # 0) 菜单弹层"关掉了"那一记回声（1.1.11 的焦点回收）：它是排到 idle
+        #    里做的，得等一轮主循环才能看到结果——所以放在这里（定时器驱动），
+        #    而不是同步那段里。
+        alien = mock.patch.object(type(win), "get_focus",
+                                  lambda _self: AlienWidget())
+        spy: list = []
+        grab = mock.patch.object(win.area, "grab_focus", lambda: spy.append(1))
+
+        def step_popover():
+            win.keys.hook_menu_popover(win.menu_button)
+            popover = win.menu_button.get_popover()
+            results["menu_popover_hooked"] = popover is not None
+            win.set_toggle("info", True)
+            alien.start()
+            grab.start()
+            popover.emit("closed")
+            # 那一记回声是排到 idle 里做的（弹层拆完才动），所以**等它真的来**
+            # 再看结果——固定等 60 毫秒在忙的时候会碰不上（CI 上翻过这种车）。
+            poll(lambda: bool(spy), step_after_popover, 3.0)
+            return False
+
+        def step_after_popover():
+            alien.stop()
+            grab.stop()
+            results["focus_hook_popover"] = len(spy)
+            if not spy:
+                problems.append("菜单弹层关掉之后没有把焦点交回画面（挂钩没挂上？）")
+            # 先让手上那次"真网络"抓取彻底停下来，再换成假的（免得两拨打架）
+            win.weather.allow_fetch = False
+            poll(lambda: not win.weather._busy, step_ask, 15.0)
+            return False
+
+        GLib.timeout_add(150, step_popover)
+
+    def probe() -> bool:
+        """探针分两段：同步的把窗口/菜单/动作/卡片走一遍，异步的等后台线程。
+
+        踩过：探针里抛个异常，回调返回 None（GLib 会留着这个定时器），
+        于是进程一直跑、还占着 D-Bus 名字——下一轮就跑成了"远程实例"，
+        什么都不测、直接退出，看起来像"测试通过"。
+        """
+        try:
+            _probe_body()
+        except Exception as exc:                          # noqa: BLE001
+            import traceback
+            problems.append(f"探针自己炸了：{type(exc).__name__}: {exc}")
+            traceback.print_exc()
+            app.quit()
+            return False
+        try:
+            _start_async_probes()
+        except Exception as exc:                          # noqa: BLE001
+            import traceback
+            problems.append(f"异步探针没起来：{type(exc).__name__}: {exc}")
+            traceback.print_exc()
+            app.quit()
+        return False
+
     GLib.timeout_add_seconds(6, probe)
-    # 兜底：万一连探针都没被调到（窗口没建起来之类），十秒后也要退出
-    # 兜底：探针里有"等上一次联网抓取结束"这种等待，给宽一点
-    GLib.timeout_add_seconds(30, lambda: (problems.append("超时：探针没有跑完"),
+    # 兜底一：异步那几条要等后台线程（网络慢的时候会久一点）；到点还没收尾就报出来
+    GLib.timeout_add_seconds(75, lambda: (problems.append("超时：异步探针没有跑完"),
+                                          app.quit(), False)[-1])
+    # 兜底二：万一连探针都没被调到（窗口没建起来之类），也要退出
+    GLib.timeout_add_seconds(120, lambda: (problems.append("超时：探针没有跑完"),
                                           app.quit(), False)[-1])
     app.run([])
 

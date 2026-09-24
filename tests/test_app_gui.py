@@ -49,8 +49,18 @@ class TestGuiSmoke(unittest.TestCase):
             try:
                 r = subprocess.run([sys.executable, str(SCRIPT)], cwd=ROOT, env=env,
                                    capture_output=True, text=True, timeout=180)
-            except subprocess.TimeoutExpired:
-                self.fail("GUI 冒烟超时（>=180 秒）——多半是窗口没退出来")
+            except subprocess.TimeoutExpired as exc:
+                # 超时那一刻已经收到的输出也要带出来：探针是**跑完才打印**
+                # 结果的，看不到任何输出就说明它卡在中途（2026-09-24 的 CI
+                # 就吃过这个哑巴亏）。这里至少把已经吐出来的东西原样带出来。
+                partial = ""
+                for name, blob in (("stdout", exc.stdout), ("stderr", exc.stderr)):
+                    if blob:
+                        text = blob if isinstance(blob, str) else \
+                            blob.decode("utf-8", "replace")
+                        partial += f"\n--- {name}（超时前收到的）---\n{text[-4000:]}"
+                self.fail("GUI 冒烟超时（>=180 秒）——多半是窗口没退出来"
+                          + (partial or "（超时前没有任何输出，说明卡在中途）"))
             detail = f"\n--- stdout ---\n{r.stdout}\n--- stderr ---\n{r.stderr[-2000:]}"
             self.assertEqual(r.returncode, 0, f"GUI 冒烟失败{detail}")
             self.assertIn("problems", r.stdout, detail)
