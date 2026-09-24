@@ -181,6 +181,45 @@ class TestWeatherData(unittest.TestCase):
         self.assertTrue(W.is_fog(45))
         self.assertGreater(W.precip_strength(65), W.precip_strength(51))
 
+    def test_precip_strength_follows_the_real_amount(self):
+        """雨丝的密度看雨量：毛毛雨、中雨、大雨要明显三档。
+
+        以前只看 WMO 代码表（51 是 0.18、65 是 0.85），用户看到的"毛毛雨"和
+        "大雨"在画面上差不了多少。现在雨量在手上，就按雨量算。
+        """
+        drizzle = W.precip_strength(51, 0.2)
+        mid = W.precip_strength(63, 3.0)
+        heavy = W.precip_strength(65, 12.0)
+        self.assertLess(drizzle, mid)
+        self.assertLess(mid, heavy)
+        self.assertLess(drizzle, 0.25, "毛毛雨画得太满了")
+        self.assertGreater(heavy, 0.8)
+        # 毛毛雨那一族封顶：就算接口给的雨量数字不对，也不许画成倾盆大雨
+        self.assertLessEqual(W.precip_strength(55, 40.0), 0.34)
+        # 没有雨量数字时，仍然照代码表那一档来（老缓存 / 接口给了 0）
+        self.assertAlmostEqual(W.precip_strength(65, 0.0), 0.78, places=2)
+        self.assertAlmostEqual(W.precip_strength(51, 0.0), 0.10, places=2)
+
+    def test_precip_intensity_is_monotone(self):
+        last = -1.0
+        for mm in (0.0, 0.05, 0.2, 0.5, 1.0, 3.0, 8.0, 20.0, 40.0):
+            value = W.precip_intensity(mm)
+            self.assertGreaterEqual(value, last, f"{mm} mm/时 反而更弱了")
+            self.assertLessEqual(value, 1.0)
+            last = value
+
+    def test_precip_label_says_how_hard_it_is_raining(self):
+        """用户看得见的那句话：说"多大"得按雨量说。"""
+        self.assertEqual(W.precip_label(51, 0.2), "毛毛雨")
+        self.assertEqual(W.precip_label(61, 0.8), "小雨")
+        self.assertEqual(W.precip_label(63, 3.0), "中雨")
+        self.assertEqual(W.precip_label(65, 9.0), "大雨")
+        self.assertEqual(W.precip_label(82, 30.0), "暴雨")
+        self.assertEqual(W.precip_label(95, 3.0), W.code_text(95))   # 雷阵雨照实说
+        # 没有雨量：退回代码上的说法，不许编
+        self.assertEqual(W.precip_label(63, 0.0), W.code_text(63))
+        self.assertEqual(W.precip_label(0, 5.0), "")
+
     def test_fallback_timezone(self):
         self.assertEqual(W.fallback_timezone(108.94), "Etc/GMT-7")
         self.assertEqual(W.fallback_timezone(-74.01), "Etc/GMT+5")

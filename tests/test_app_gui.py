@@ -70,6 +70,10 @@ class TestGuiSmoke(unittest.TestCase):
             for key in ("menu_actions", "toggles", "activated", "dialogs",
                         "tray_activate", "city_change"):
                 self.assertIn(key, payload, f"探针没跑到 {key}{detail}")
+            # 信息卡那几条探针（日弧的鼠标映射 / 收起之后不留命中方块）
+            for key in ("info_arc_mid", "info_arc_quarter", "info_rects_when_hidden"):
+                self.assertIn(key, payload, f"探针没跑到 {key}{detail}")
+            self.assertEqual(payload["info_rects_when_hidden"], 0, detail)
             self.assertEqual(payload["tray_activate"], "ok", detail)
             self.assertEqual(payload["tick_errors_after"], 0, detail)
         finally:

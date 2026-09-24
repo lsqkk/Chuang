@@ -138,9 +138,11 @@ class TestInfoCardDrawing(unittest.TestCase):
         self.painter = SkyPainter(seed=7)
         self.engine = _engine()
 
-    def _draw(self, when=DAY, weather=None, w=1000, h=640, compact=False):
+    def _draw(self, when=DAY, weather=None, w=1000, h=640, compact=False,
+              info_buttons=True):
         scene = self.engine.build(when, weather, location_label="西安 · 陕西省")
         self.painter.ui.info_compact = compact
+        self.painter.ui.info_buttons = info_buttons
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
         self.painter.draw(cairo.Context(surf), w, h, scene, 180.0)
         return scene
@@ -258,6 +260,81 @@ class TestInfoCardDrawing(unittest.TestCase):
         self.assertNotEqual(self._card_pixels(when=today, weather=fresh),
                             self._card_pixels(when=today, weather=older),
                             "天气更新于的时间变了，卡片还停在旧的那一行上")
+
+    def test_the_wallpaper_card_has_no_buttons(self):
+        """桌面壁纸上的那张卡没有鼠标：收起 / 刷新 / 每行的小箭头一概不画。
+
+        画出来还会让人以为能点（而且要挪出位置），所以 `info_buttons=False`
+        时既不下笔、也不记命中方块。
+        """
+        self._draw(weather=_weather(), info_buttons=False)
+        kinds = [r[4] for r in self.painter.ui.info_rects]
+        self.assertEqual(kinds, [], f"壁纸上的卡片还留着能点的方块：{kinds}")
+        # 一行行的事实、日弧本身照画（那是内容，不是按钮）
+        self.assertGreaterEqual(len(self.painter.ui.info_rows), 5)
+        full = self._card_pixels(weather=_weather())
+        bare = self._card_pixels(weather=_weather(), info_buttons=False)
+        self.assertNotEqual(full, bare, "有按钮和没按钮画出来一模一样？")
+
+    def test_a_hidden_card_leaves_no_hitboxes(self):
+        """空格收起卡片之后，原来那些能点的方块必须一起消失。
+
+        以前 `ui.info_rects` 会留着上一帧的清单，于是点卡片原来那块空白处
+        照样会跳去预览某个时刻——卡片都不见了，画面却动了。
+        """
+        self._draw(weather=_weather())
+        self.assertTrue(self.painter.ui.info_rects, "卡片画出来却没有命中方块")
+        scene = self.engine.build(DAY, _weather(), location_label="西安 · 陕西省")
+        self.painter.ui.show_info = False
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1000, 640)
+        self.painter.draw(cairo.Context(surf), 1000, 640, scene, 180.0)
+        self.assertEqual(self.painter.ui.info_rects, [],
+                         "卡片收起来了，命中方块还在")
+
+    def test_a_hidden_ribbon_leaves_no_rect(self):
+        """长卷关掉之后，底下那条也不该还能拖（光标变成左右箭头、拖动跳时间）。"""
+        weather = _weather()
+        self.painter.ui.ribbon = self.engine.ribbon(DAY, weather)
+        self._draw(weather=weather)
+        self.assertGreater(self.painter.ui.ribbon_rect[2], 0, "长卷没画出来")
+        scene = self.engine.build(DAY, _weather(), location_label="西安 · 陕西省")
+        self.painter.ui.show_ribbon = False
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1000, 640)
+        self.painter.draw(cairo.Context(surf), 1000, 640, scene, 180.0)
+        self.assertEqual(self.painter.ui.ribbon_rect, (0.0, 0.0, 0.0, 0.0),
+                         "长卷关掉了，命中区还留着")
+
+    def test_the_arc_maps_the_whole_day(self):
+        """日弧那条轨道铺的是**一整天**，鼠标映射也得按一整天来。
+
+        以前把轨道宽度当成"日出到日落"来插值：鼠标停在左边四分之一处
+        （真实时间 06:00）会被算成"日出前不久"。这里按 0 / 6 / 12 / 18 点
+        各点一次，落在轨道上的位置必须是准的。
+        """
+        from chuang.infocard import InfoCard
+
+        class _Win:                       # 只给 InfoCard 要用的那两个东西
+            def __init__(self, painter, scene):
+                self.painter = painter
+                self._scene = scene
+
+            def _current_scene(self):
+                return self._scene
+
+        day = DAY.replace(hour=12, minute=0)
+        scene = self.engine.build(day, _weather(), location_label="西安 · 陕西省")
+        self.painter.ui.info_compact = False
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1000, 640)
+        self.painter.draw(cairo.Context(surf), 1000, 640, scene, 180.0)
+        arc = next(r for r in self.painter.ui.info_rects if r[4] == "arc")
+        card = InfoCard(_Win(self.painter, scene))
+        rx, rw = arc[0], arc[2]
+        for frac, want in ((0.0, "00:00"), (0.25, "06:00"),
+                           (0.5, "12:00"), (0.75, "18:00")):
+            got = card.arc_time(rx + rw * frac)
+            self.assertIsNotNone(got)
+            self.assertEqual(got.strftime("%H:%M"), want,
+                             f"轨道 {frac:.0%} 处该是 {want}，算出来是 {got}")
 
 
 @unittest.skipUnless(HAS_STACK, "没有 pycairo / PyGObject，跳过")

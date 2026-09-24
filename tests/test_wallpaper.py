@@ -183,6 +183,59 @@ class TestScreenSize(unittest.TestCase):
         self.assertGreaterEqual(w, 320)
         self.assertGreaterEqual(h, 240)
 
+    def test_bottom_inset_is_sane(self):
+        """屏幕底下被面板 / dock 占掉的高度：读不到就当 0，绝不能给个荒唐数。"""
+        inset = W.screen_bottom_inset()
+        self.assertIsInstance(inset, float)
+        self.assertGreaterEqual(inset, 0.0)
+        self.assertLess(inset, 400.0)
+
+
+@unittest.skipUnless(HAS_STACK, "没有 pycairo / PyGObject，跳过")
+class TestRibbonClearsTheDock(unittest.TestCase):
+    """桌面壁纸上的长卷要给底部的 dock 让路。
+
+    壁纸是铺满整屏的，而常驻的底部 dock 压在屏幕最下面（本机 64px）。长卷
+    底下还有一行整点标签，以前正好钻到 dock 底下——用户看到的就是"下面还是
+    有点挡着"。`ui.bottom_inset` 就是这时候让开的。
+    """
+
+    W, H, INSET = 1920, 1080, 64.0
+
+    def _ribbon_rect(self, inset: float):
+        import cairo
+        from chuang.render import SkyPainter
+        from chuang.scene import SkyEngine
+        from chuang.weather import HourPoint, Weather
+
+        tz = ZoneInfo("Asia/Shanghai")
+        when = datetime(2026, 9, 24, 18, 40, tzinfo=tz)
+        base = when.replace(tzinfo=None, hour=0, minute=0)
+        weather = Weather(ok=True, code=63, cloud=90.0, temp=18.0, precip=2.4)
+        for i in range(48):
+            weather.hourly.append(HourPoint(base + timedelta(hours=i), 90.0, 63,
+                                            18.0, 60.0, precip_mm=2.4))
+        weather.invalidate()
+        engine = SkyEngine()
+        engine.set_location(34.3416, 108.9398, "Asia/Shanghai")
+        scene = engine.build(when, weather, location_label="西安")
+        painter = SkyPainter(seed=3)
+        painter.ui.info_buttons = False
+        painter.ui.bottom_inset = inset
+        painter.ui.ribbon = engine.ribbon(base, weather)
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.W, self.H)
+        painter.draw(cairo.Context(surf), self.W, self.H, scene, 180.0)
+        return painter.ui.ribbon_rect
+
+    def test_the_long_ribbon_moves_up_when_a_dock_is_there(self):
+        plain = self._ribbon_rect(0.0)
+        docked = self._ribbon_rect(self.INSET)
+        self.assertLess(docked[1], plain[1], "让开 dock 之后长卷反而更低了")
+        # 长卷下沿 + 整点标签那一行，都得在面板之上
+        bottom = docked[1] + docked[3]
+        self.assertLessEqual(bottom + 12.0, self.H - self.INSET,
+                             "长卷压进底部面板里了")
+
 
 class TestInfoMode(unittest.TestCase):
     """壁纸上那张「此刻的事实」的版式：跟随窗口 / 精简一条 / 完整版。"""
@@ -220,11 +273,13 @@ class TestWallpaperCardStyle(unittest.TestCase):
                 mock.patch.object(W, "CACHE", tmp):
             # adopt=False：就地重写槽位文件，**不碰** gsettings（测试不写用户桌面）
             worker.render_now(now, weather, True, False, (720, 460), 0,
-                              lambda *a: out.append(a), compact=compact)
+                              lambda *a: out.append(a), compact=compact, inset=52.0)
             self._pump(lambda: bool(out))
         self.assertTrue(out, "壁纸渲染没有回调（后台线程没跑完？）")
         self.assertTrue(slots[0].exists(), "槽位文件没写出来")
-        return slots[0].read_bytes(), bool(worker.painter.ui.info_compact)
+        ui = worker.painter.ui
+        return (slots[0].read_bytes(), bool(ui.info_compact), bool(ui.info_buttons),
+                float(ui.bottom_inset))
 
     @staticmethod
     def _pump(predicate, timeout: float = 10.0) -> bool:
@@ -245,10 +300,14 @@ class TestWallpaperCardStyle(unittest.TestCase):
     def test_the_card_style_reaches_the_renderer(self):
         import hashlib
         with tempfile.TemporaryDirectory() as d:
-            full, full_compact = self._render(Path(d), compact=False)
-            slim, slim_compact = self._render(Path(d), compact=True)
+            full, full_compact, buttons, inset = self._render(Path(d), compact=False)
+            slim, slim_compact, _b, _i = self._render(Path(d), compact=True)
         self.assertFalse(full_compact)
         self.assertTrue(slim_compact)
+        # 桌面上的那张卡不该画"能点的东西"：那儿没有鼠标
+        self.assertFalse(buttons, "壁纸上的信息卡还画着收起 / 刷新按钮")
+        # 底部余量也真的传到了画笔上（长卷靠它让开 dock）
+        self.assertEqual(inset, 52.0)
         self.assertNotEqual(hashlib.sha256(full).hexdigest(),
                             hashlib.sha256(slim).hexdigest(),
                             "精简与完整画出来的壁纸一模一样")

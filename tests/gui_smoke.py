@@ -324,6 +324,15 @@ def main() -> int:
             results["info_arc_mid"] = str(mid)
             if not (rise and sett and mid and rise < mid < sett):
                 problems.append(f"点日弧中间没落在日出与日落之间：{mid}")
+            # 那条轨道铺的是**一整天**：1/4 处就是 06:00 上下。
+            # 1.1.11 及以前这里把整条轨道当成"日出到日落"来插值，鼠标在
+            # 一天的区间上走，指到的是白天的区间（用户报的就是这个）。
+            win._set_preview(None)
+            win.info.activate(rects.index(arc), arc[0] + arc[2] * 0.25)
+            quarter = win.painter.ui.preview_dt
+            results["info_arc_quarter"] = str(quarter)
+            if quarter is None or quarter.hour not in (5, 6):
+                problems.append(f"日弧 1/4 处该是 06:00 上下，算出来是 {quarter}")
         win._set_preview(None)
         win.set_toggle("infocompact", True)
         results["info_compact"] = bool(win.painter.ui.info_compact
@@ -379,6 +388,12 @@ def main() -> int:
         results["key_space"] = [handled_space, bool(win.painter.ui.show_info)]
         if not handled_space or win.painter.ui.show_info:
             problems.append("空格没有收起信息卡")
+        # 卡片收起来了，原来那些能点的方块必须一起消失——否则点空处照样跳时间
+        win.painter.draw(cr, 1000, 640, win._current_scene(), 180.0)
+        results["info_rects_when_hidden"] = len(win.painter.ui.info_rects)
+        if win.painter.ui.info_rects:
+            problems.append("信息卡收起来了，还留着"
+                            f" {len(win.painter.ui.info_rects)} 个命中方块")
         press("space")
         if not win.painter.ui.show_info:
             problems.append("再按空格没有把信息卡放回来")

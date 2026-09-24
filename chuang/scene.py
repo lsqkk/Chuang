@@ -85,7 +85,9 @@ class Scene:
     humidity: float = 0.0
     wind_speed: float = 0.0
     wind_dir: float = 0.0
-    precip_strength: float = 0.0
+    precip_strength: float = 0.0    # 0-1，雨丝画多密 / 多长 / 多快看它（weather.precip_strength）
+    precip_mm: float = 0.0          # 那一刻的降水量（mm/时），没有数据就是 0
+    precip_label: str = ""          # 那一刻的雨有多大（"毛毛雨" / "中雨" / …）
     precip_kind: str = "none"
     thunder: bool = False
     fog: bool = False
@@ -240,7 +242,7 @@ class SkyEngine:
                 # 以前不管看的是哪一天，气温都显示"此刻"的读数，跳到三天后
                 # 也还是现在这个度数——那是假的。
                 from .weather import (code_text, is_fog, is_thunder, precip_kind,
-                                      precip_strength)
+                                      precip_label, precip_strength)
                 sc.has_weather = True
                 sc.weather_now = (day == today)
                 sc.weather_at = float(getattr(weather, "fetched_at", 0.0) or 0.0)
@@ -263,7 +265,11 @@ class SkyEngine:
                 if sc.weather_now and not preview:
                     mm = weather.precip          # 此时此刻真正在下多少
                 sc.precip_kind = precip_kind(sc.code)
-                sc.precip_strength = precip_strength(sc.code, mm or 0.0)
+                sc.precip_mm = max(0.0, float(mm or 0.0))
+                sc.precip_strength = precip_strength(sc.code, sc.precip_mm)
+                # 手上有雨量就按雨量说（毛毛雨 / 小雨 / 大雨），没有才退回代码
+                sc.precip_label = (precip_label(sc.code, sc.precip_mm)
+                                   if sc.precip_kind != "none" else "")
                 sc.thunder = is_thunder(sc.code)
                 sc.fog = is_fog(sc.code)
             else:
@@ -286,12 +292,16 @@ class SkyEngine:
             alt, _ = A.sun_altaz(A.to_utc(t), self.lat, self.lon)
             cloud = 0.0
             if covered:
-                from .weather import precip_kind
+                from .weather import precip_kind, precip_strength
                 cloud = weather.cloud_at(t)
                 cloud = weather.cloud if cloud is None else cloud
                 code = weather.code_at(t)
                 if code is not None and precip_kind(code) != "none":
-                    cloud = max(cloud, 55.0)
+                    # 下雨的那几格压暗一点。压多少看**真实雨量**：
+                    # 毛毛雨只加一层灰，暴雨那一格几乎压成铅色（这是画法，
+                    # 不是"编一个云量出来"——雨大本来天上就厚）。
+                    mm = weather.precip_at(t) or 0.0
+                    cloud = max(cloud, 50.0 + 45.0 * precip_strength(code, mm))
             out.append((t, ribbon_color(alt, cloud)))
         return out
 
@@ -333,12 +343,19 @@ def duration_zh(delta) -> str:
 
 def human_hint(sc: "Scene") -> str:
     """一句人话：把此刻最值得知道的事情说出来。"""
-    if sc.has_weather and sc.precip_kind == "rain" and sc.precip_strength > 0.2:
+    if sc.has_weather and sc.precip_kind == "rain" and sc.precip_strength > 0.05:
+        # 说什么"雨"看真实雨量（毛毛雨 / 小雨 / 中雨…），不只看代码表——
+        # 以前 51 和 65 都可能说成"雨"，用户分不出窗外是小雨还是倾盆。
+        what = sc.precip_label or sc.weather_text
         if sc.thunder:
             return "外面正在打雷下雨，雨会斜着打在窗上。"
-        return f"外面正在下{sc.weather_text}，这种时候最适合发呆。"
-    if sc.has_weather and sc.precip_kind == "snow" and sc.precip_strength > 0.2:
-        return "外面在下雪，雪花是慢慢飘下来的。"
+        if sc.precip_strength >= 0.62:
+            return f"外面在下{what}，雨点砸在玻璃上，路面已经湿得发亮。"
+        if sc.precip_strength <= 0.22:
+            return f"外面飘着{what}，细得几乎看不出雨丝。"
+        return f"外面在下{what}，这种时候最适合发呆。"
+    if sc.has_weather and sc.precip_kind == "snow" and sc.precip_strength > 0.05:
+        return f"外面下着{sc.precip_label or '雪'}，雪花是慢慢飘下来的。"
     if sc.has_weather and sc.fog:
         return "外面起雾了，远处的屋顶已经看不清。"
     if sc.has_weather and sc.cloud > 82:

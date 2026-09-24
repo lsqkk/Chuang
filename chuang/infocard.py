@@ -13,12 +13,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from . import actions as actionmod
 from .render import clamp
 from .scene import compass
-from .weather import code_text
+from .weather import code_text, precip_kind, precip_label
 
 
 class InfoCard:
@@ -40,15 +40,22 @@ class InfoCard:
         return -1
 
     def arc_time(self, x: float):
-        """日弧上某个横坐标对应哪一刻（在日出与日落之间插值）。"""
+        """日弧上某个横坐标对应哪一刻。
+
+        **这条轨道铺的是整整一天**：画的时候，日出到日落那一段上了色、其余是灰的
+        （见 render._paint_info）。以前这里却把整条轨道的宽度当成"日出到日落"
+        来插值——鼠标在轨道左边四分之一处（真实时间 06:00 上下）会被算成
+        "日出前不久"，越往左差得越多。这就是"鼠标从一天的区间被映射到白天的
+        区间"：现在照着画法反过来算，横坐标 → 一天里的比例 → 那一刻。
+        """
         for rx, _ry, rw, _rh, kind, _when in self.ui.info_rects:
             if kind != "arc" or rw <= 0:
                 continue
             sc = self.win._current_scene()
-            rise, sett = sc.events.get("sunrise"), sc.events.get("sunset")
-            if not rise or not sett or sett <= rise:
-                return None
-            return rise + (sett - rise) * clamp((x - rx) / rw, 0.0, 1.0)
+            day = sc.when.replace(hour=0, minute=0, second=0, microsecond=0)
+            frac = clamp((x - rx) / rw, 0.0, 1.0)
+            # 右端是"这一天的 24:00"，也就是 23:59，别把预览甩到第二天去
+            return day + timedelta(minutes=min(1439.0, frac * 1440.0))
         return None
 
     # ---- 点了干什么 --------------------------------------------------
@@ -139,9 +146,13 @@ class InfoCard:
             # 预览到别的日子：逐小时预报里有云、天气现象、气温，
             # 但没有"体感 / 湿度 / 风"这三样（接口只给此刻的）
             lines += [f"那会儿　{sc.weather_text}　{sc.temp:.0f}°C",
-                      f"云量　　{sc.cloud:.0f}%",
-                      "",
-                      "看的是别的日子，所以只报逐小时的云、天气和气温；"
+                      f"云量　　{sc.cloud:.0f}%"]
+            # 逐小时表里也有降水量：说"那会儿下多大"同样按真实雨量说
+            if sc.precip_kind != "none":
+                who = sc.precip_label or sc.weather_text
+                lines.append(f"降水　　{sc.precip_mm:.1f} mm/时（{who}）")
+            lines += ["",
+                      "看的是别的日子，所以只报逐小时的云、天气、气温和降水量；"
                       "体感、湿度、风是此刻的读数，这里就不写了。",
                       f"数据　　Open-Meteo　更新于 {stamp}" if stamp
                       else "数据　　Open-Meteo　（逐小时预报）"]
@@ -152,8 +163,15 @@ class InfoCard:
             lines.append(f"风　　　{compass(sc.wind_dir)}（{sc.wind_dir:.0f}°）"
                          f"{sc.wind_speed:.1f} km/h"
                          + (f"　阵风 {w.gusts:.1f} km/h" if w.gusts else ""))
-            lines.append(f"降水　　{w.precip:.1f} mm/时　"
-                         f"能见度 {w.visibility / 1000:.1f} km")
+            mm = max(0.0, sc.precip_mm or w.precip)
+            if sc.precip_kind != "none" or mm > 0:
+                # 说"多大"用真实雨量那一句：毛毛雨 0.2 mm/时 和大雨 12 mm/时
+                # 不能都写成"有雨"
+                who = sc.precip_label or sc.weather_text or "降水"
+                lines.append(f"降水　　{mm:.1f} mm/时（{who}）　"
+                             f"能见度 {w.visibility / 1000:.1f} km")
+            else:
+                lines.append(f"降水　　此刻没有　能见度 {w.visibility / 1000:.1f} km")
             lines.append("")
             lines.append("数据　　Open-Meteo　" + (f"更新于 {stamp}" if stamp else "")
                          + ("（离线，上一次的结果）" if sc.weather_stale else ""))
@@ -202,5 +220,11 @@ class InfoCard:
                 continue
             temp = weather.temp_at(t)
             warmth = f"{temp if temp is not None else weather.temp:.0f}°C"
-            out.append(f"{code_text(code)} {warmth} · 云量 {cloud:.0f}%")
+            mm = weather.precip_at(t) or 0.0
+            # 有雨就按雨量说"多大"：悬停到毛毛雨那一格，不该和大雨一个说法
+            what = precip_label(code, mm) if precip_kind(code) != "none" else code_text(code)
+            note = f"{what or code_text(code)} {warmth} · 云量 {cloud:.0f}%"
+            if precip_kind(code) != "none" and mm > 0:
+                note += f" · {mm:.1f} mm/时"
+            out.append(note)
         return out

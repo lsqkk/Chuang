@@ -75,6 +75,37 @@ def screen_size() -> tuple[int, int]:
     return 1920, 1080
 
 
+def screen_bottom_inset() -> float:
+    """主显示器底下被系统面板 / dock 占掉多少像素。
+
+    壁纸是**铺满整屏**的，而常驻的底部 dock 会压在它上面（本机 dash-to-dock
+    固定在底部，workarea 比屏幕矮 64 像素）。桌面只在"面板常驻"时才把它算进
+    workarea——读到的这个数就是"底下那一条有多高"，长卷照着它让开（见
+    render._draw_ribbon 的 bottom_inset）。读不到（没有 Gdk / 面板自动隐藏）
+    就返回 0：那就只剩 `scene_height` 里那套按像素估的余量。
+
+    **必须在主线程调用**（Gdk 不是线程安全的），所以它在
+    WallpaperController._render_target 里算，再传给渲染线程。
+    """
+    try:
+        import gi
+        gi.require_version("Gdk", "4.0")
+        from gi.repository import Gdk
+        display = Gdk.Display.get_default()
+        if display is not None:
+            monitors = display.get_monitors()
+            if monitors and monitors.get_n_items() > 0:
+                mon = monitors.get_item(0)
+                geo, wa = mon.get_geometry(), mon.get_workarea()
+                if geo.height > 240 and wa.height > 0:
+                    bottom = (geo.y + geo.height) - (wa.y + wa.height)
+                    if 0 < bottom < geo.height * 0.4:
+                        return float(bottom)
+    except Exception:
+        pass
+    return 0.0
+
+
 def render(path: Path, painter, scene, az0: float, size: tuple[int, int]) -> Path:
     """把一帧天空画进 PNG。
 
@@ -380,7 +411,7 @@ class Worker:
     def render_now(self, when: datetime, weather, show_info: bool, show_ribbon: bool,
                    size: tuple[int, int], slot: int, done,
                    adopt: bool = False, weather_off: bool = False,
-                   compact: bool = False) -> None:
+                   compact: bool = False, inset: float = 0.0) -> None:
         """渲染"此刻"的一张壁纸。done(ok, message, slot) 在主线程被调用。
 
         adopt=False（常态）：**就地更新桌面正在显示的那个文件**。gnome-shell
@@ -388,6 +419,8 @@ class Worker:
         adopt=True（接管 / 每几分钟兜底一次）：写另一张再把壁纸 URI 切过去，
         切换后要连碰两次 mtime —— 刚切过去的那张，shell 很可能先拿出它**上一次**
         的解码结果（这就是"显示的是这个文件上一版"的来源）。
+
+        inset：屏幕底下被系统面板 / dock 占掉的高度（见 screen_bottom_inset）。
         """
         if not self._lock.acquire(blocking=False):
             return
@@ -398,6 +431,8 @@ class Worker:
             try:
                 self.painter.ui.show_info = show_info
                 self.painter.ui.info_compact = compact
+                self.painter.ui.info_buttons = False      # 桌面上没有鼠标
+                self.painter.ui.bottom_inset = float(inset or 0.0)
                 self.painter.ui.show_ribbon = show_ribbon
                 if show_ribbon:
                     day = when.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -431,7 +466,8 @@ class Worker:
 
     def render_day(self, day: datetime, weather, show_info: bool, show_ribbon: bool,
                    size: tuple[int, int], frames: int, progress, done,
-                   weather_off: bool = False, compact: bool = False) -> None:
+                   weather_off: bool = False, compact: bool = False,
+                   inset: float = 0.0) -> None:
         """渲染一整天的 48 帧并生成动态壁纸 XML。"""
         if not self._lock.acquire(blocking=False):
             return
@@ -447,6 +483,8 @@ class Worker:
                 _clear_dir(stage)
                 self.painter.ui.show_info = show_info
                 self.painter.ui.info_compact = compact
+                self.painter.ui.info_buttons = False      # 桌面上没有鼠标
+                self.painter.ui.bottom_inset = float(inset or 0.0)
                 self.painter.ui.show_ribbon = show_ribbon
                 if show_ribbon:
                     self.painter.ui.ribbon = self.engine.ribbon(day, weather)

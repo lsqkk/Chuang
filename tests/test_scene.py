@@ -69,6 +69,29 @@ class TestEngine(unittest.TestCase):
         self.assertNotIn("正在下", hint)
         self.assertNotIn("起雾", hint)
 
+    def test_the_rain_amount_reaches_the_scene(self):
+        """雨量得一路走到画面上：毛毛雨和大雨在场景里就得分得开。"""
+        when = datetime(2026, 9, 23, 18, 30, tzinfo=self.zi)
+        drizzle = _weather(cloud=95.0, code=51)
+        for p in drizzle.hourly:
+            p.precip_mm = 0.2
+        drizzle.precip = 0.2
+        sc = self.eng.build(when, drizzle, location_label="西安")
+        self.assertEqual(sc.precip_kind, "rain")
+        self.assertAlmostEqual(sc.precip_mm, 0.2, places=2)
+        self.assertEqual(sc.precip_label, "毛毛雨")
+        self.assertLess(sc.precip_strength, 0.25)
+        self.assertIn("毛毛雨", human_hint(sc))
+
+        heavy = _weather(cloud=98.0, code=65)
+        for p in heavy.hourly:
+            p.precip_mm = 12.0
+        heavy.precip = 12.0
+        sc2 = self.eng.build(when, heavy, location_label="西安")
+        self.assertEqual(sc2.precip_label, "大雨")
+        self.assertGreater(sc2.precip_strength, sc.precip_strength + 0.4)
+        self.assertIn("大雨", human_hint(sc2))
+
     def test_ribbon_spans_one_day(self):
         day = datetime(2026, 9, 23, tzinfo=self.zi)
         w = _weather(cloud=95.0, code=63)

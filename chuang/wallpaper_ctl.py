@@ -77,11 +77,15 @@ class WallpaperController:
                                 bool(self.win.painter.ui.info_compact))
 
     def _render_target(self):
-        """渲染用的一致性参数：地点、屏幕、天气（关掉天气时是 None）。"""
+        """渲染用的一致性参数：地点、屏幕、天气（关掉天气时是 None）、底部余量。
+
+        `inset` 是屏幕底下被面板 / dock 占掉的高度，**必须在主线程读**
+        （Gdk 不是线程安全的），再交给渲染线程去画长卷的位置。
+        """
         loc = self.config.location
         self.worker.location(loc.lat, loc.lon, loc.timezone, loc.label)
-        return wallmod.screen_size(), self.win._weather_for_paint(), \
-            not self.win.weather.enabled
+        return (wallmod.screen_size(), self.win._weather_for_paint(),
+                not self.win.weather.enabled, wallmod.screen_bottom_inset())
 
     def schedule_soon(self) -> None:
         """下一次心跳立刻来一张（换城市、睡眠唤醒之后用）。"""
@@ -117,7 +121,7 @@ class WallpaperController:
         self.remember()
         show_info, show_ribbon = self.opts()
         compact = self.compact()
-        size, weather, weather_off = self._render_target()
+        size, weather, weather_off, inset = self._render_target()
         # 写哪一张？**写桌面此刻正在显示的那一张**。
         #
         # gnome-shell 把壁纸的解码结果按文件缓存，而且只监听"当前显示的那个
@@ -137,7 +141,7 @@ class WallpaperController:
         self.worker.render_now(
             self.win.engine.local_now(), weather, show_info, show_ribbon, size, slot,
             lambda ok, msg, slot: self._done(ok, msg, slot, quiet),
-            adopt=adopt, weather_off=weather_off, compact=compact)
+            adopt=adopt, weather_off=weather_off, compact=compact, inset=inset)
         if not quiet:
             self.win.toast("正在把这扇窗挂到桌面上…", 2.0)
 
@@ -253,12 +257,12 @@ class WallpaperController:
         self.remember()
         show_info, show_ribbon = self.opts()
         compact = self.compact()
-        size, weather, weather_off = self._render_target()
+        size, weather, weather_off, inset = self._render_target()
         self.win.toast("正在画这一天的 96 张天色，约二十秒…", 6.0)
         self.worker.render_day(self.win.engine.local_date(), weather,
                                show_info, show_ribbon, size, 96,
                                self._progress, self._day_done,
-                               weather_off=weather_off, compact=compact)
+                               weather_off=weather_off, compact=compact, inset=inset)
 
     def _progress(self, done: int, total: int) -> bool:
         self.win.painter.ui.toast = f"正在画今天的天色 {done}/{total}"

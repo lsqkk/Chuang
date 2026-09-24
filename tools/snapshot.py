@@ -2,7 +2,10 @@
 """不开窗口，直接把某一刻的天空渲染成 PNG——用来检查画面。
 
 用法:
-    python3 tools/snapshot.py 输出.png 18:40 34.34 108.94 [天气码] [云量] [风速] [风向]
+    python3 tools/snapshot.py 输出.png 18:40 34.34 108.94 [天气码] [云量] [风速] [风向] [宽] [高] [雨量mm/时]
+
+最后那个雨量是 1.1.12 加的：想看一眼"毛毛雨（0.2）"和"大雨（9）"画出来差多少，
+就把它给上——雨丝的密度、长度、速度、透明度全看这个数。
 """
 
 import sys
@@ -29,30 +32,38 @@ def main():
     wind = float(sys.argv[7]) if len(sys.argv) > 7 else 0.0
     wdir = float(sys.argv[8]) if len(sys.argv) > 8 else 0.0
     w, h = (int(sys.argv[9]), int(sys.argv[10])) if len(sys.argv) > 10 else (1200, 760)
+    rate_mm = float(sys.argv[11]) if len(sys.argv) > 11 else None
 
     tz = ZoneInfo("Asia/Shanghai")
     when = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
     if "T" in clock:
         when = datetime.fromisoformat(clock).replace(tzinfo=tz)
     else:
-        hh, mm = (int(x) for x in clock.split(":")[:2])
-        when = when.replace(hour=hh, minute=mm)
+        # 注意别把分钟也叫 mm——上面那个是"雨量（mm/时）"，同名会互相踩
+        hh, minute = (int(x) for x in clock.split(":")[:2])
+        when = when.replace(hour=hh, minute=minute)
 
     engine = SkyEngine()
     engine.set_location(lat, lon, "Asia/Shanghai")
 
     weather = None
     if code is not None:
+        from chuang.weather import precip_kind
+        rate = (rate_mm if rate_mm is not None
+                else 0.4 if code in (51, 53, 55)
+                else 1.5 if code in (63, 65, 95) else 0.0)
+        if precip_kind(code) == "none":
+            rate = 0.0
         # fetched_at 给"五分钟前"：卡片底下会写"天气更新于 18:30"
         weather = Weather(ok=True, fetched_at=when.timestamp() - 300.0,
                           code=code, cloud=cloud,
                           wind_speed=wind, wind_dir=wdir, temp=19.0, apparent=19.0,
-                          humidity=70.0, precip=1.5 if code in (63, 65, 95) else 0.0,
+                          humidity=70.0, precip=rate,
                           visibility=9000.0)
         base = when.replace(hour=0, minute=0, tzinfo=None)
         for i in range(48):
             weather.hourly.append(HourPoint(base + timedelta(hours=i), cloud, code,
-                                            19.0, 50.0))
+                                            19.0, 50.0, precip_mm=rate))
 
     scene = engine.build(when, weather, preview=False, location_label="西安 · 陕西省")
     painter = SkyPainter(seed=1234)

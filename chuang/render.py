@@ -418,6 +418,7 @@ class WeatherFX:
         self.clouds: list[dict] = []
         self.drops: list[list[float]] = []
         self.flakes: list[list[float]] = []
+        self.splashes: list[list[float]] = []   # 落在马路上的雨点涟漪
         self.flash = 0.0
         self.next_flash = 0.0
         self.plane: dict | None = None
@@ -426,9 +427,14 @@ class WeatherFX:
         self.signature = None
 
     def sync(self, scene: Scene, now: float) -> None:
-        """场景（云量/天气/风向）变了就重建粒子。"""
+        """场景（云量/天气/风/雨量）变了就重建粒子。"""
+        kind = scene.precip_kind if scene.has_weather else "none"
+        strength = scene.precip_strength if scene.has_weather else 0.0
+        # **雨量也要进 key**：以前只有天气代码与云量。同一档雨下着下着变大了
+        # （代码还是 63、降水量从 1 涨到 5），雨丝一根都不会多——画面看着
+        # "毛毛雨和大雨差不多"，有一半是这里来的。
         sig = (round(scene.cloud / 4), scene.code, round(scene.wind_speed),
-               round(scene.wind_dir / 10), scene.precip_kind)
+               round(scene.wind_dir / 10), kind, round(strength * 12))
         if sig == self.signature:
             return
         self.signature = sig
@@ -460,20 +466,28 @@ class WeatherFX:
         clouds.sort(key=lambda c: (c["layer"] != "high", c["alt"]))
         self.clouds = clouds
 
-        kind = scene.precip_kind if scene.has_weather else "none"
-        strength = scene.precip_strength if scene.has_weather else 0.0
         self.drops = []
         self.flakes = []
+        self.splashes = []
         if kind == "rain" and strength > 0:
-            n = int(70 + 320 * strength)
+            # 雨丝：数量随雨量陡涨（毛毛雨是"飘着几丝"，暴雨才是"满窗都是"），
+            # 并且分成远近两层——远处的细、短、暗、慢，近处的粗、长、亮、快。
+            # 全都一样的时候，一团等宽的灰线看着就是"雨有点糙"。
+            n = int(16 + 520 * strength ** 1.35)
             for _ in range(n):
+                depth = rnd.random() ** 1.5           # 0 远 → 1 近
                 self.drops.append([
                     rnd.random(), rnd.random(),
-                    rnd.uniform(0.06, 0.16) * (0.6 + strength),   # 长度
-                    rnd.uniform(0.55, 1.15) * (0.75 + strength),  # 速度
-                    rnd.uniform(0.25, 0.75),                      # 透明度
-                    rnd.uniform(0.6, 2.2),                        # 粗细
+                    (0.35 + 0.95 * depth) * rnd.uniform(0.8, 1.3),   # 长度倍数
+                    (0.55 + 0.75 * depth) * rnd.uniform(0.85, 1.2),  # 速度倍数
+                    (0.30 + 0.60 * depth) * rnd.uniform(0.75, 1.1),  # 透明度
+                    (0.45 + 2.0 * depth) * rnd.uniform(0.8, 1.25),   # 粗细
+                    rnd.uniform(0, TAU),                             # 摇摆相位
                 ])
+            # 雨点砸在湿马路上溅开的小涟漪（窗外的地面，不是屋里那条窗台）
+            for _ in range(int(8 + 46 * strength)):
+                self.splashes.append([rnd.random(), rnd.random(),
+                                      rnd.uniform(0.55, 1.35)])
         elif kind == "snow" and strength > 0:
             n = int(60 + 220 * strength)
             for _ in range(n):
@@ -505,8 +519,10 @@ class WeatherFX:
             elif c["x"] < -0.35:
                 c["x"] = 1.35
 
+        # 雨丝下落的速度也跟着雨量走：毛毛雨是慢慢飘，暴雨是砸下来
+        fall = 0.28 + 0.55 * (scene.precip_strength if scene.has_weather else 0.0)
         for d in getattr(self, "drops", []):
-            d[1] += d[3] * dt * 0.55
+            d[1] += d[3] * dt * fall
             d[0] += drift * d[3] * dt * 0.10
             if d[1] > 1.02:
                 d[1] = -0.03
@@ -515,6 +531,13 @@ class WeatherFX:
                 d[0] -= 1.06
             elif d[0] < -0.03:
                 d[0] += 1.06
+
+        splash_speed = 0.9 + 1.6 * (scene.precip_strength if scene.has_weather else 0.0)
+        for s in getattr(self, "splashes", []):
+            s[1] += dt * splash_speed
+            if s[1] >= 1.0:
+                s[1] -= 1.0
+                s[0] = self.rnd.random()
 
         for f in getattr(self, "flakes", []):
             f[5] += 0.02
@@ -561,6 +584,9 @@ class UIState:
     def __init__(self) -> None:
         self.show_info = True
         self.info_compact = False       # 信息卡精简模式（只剩时间与那句话）
+        # 卡片上画不画"能点的东西"（收起箭头 / 刷新按钮 / 每行右边那颗小箭头）。
+        # 桌面壁纸上的那张卡没有鼠标，画成可点的样子只会误导人（见 wallpaper.py）。
+        self.info_buttons = True
         self.info_rows: list = []       # 这一帧画出来的"事实"（FactRow 列表）
         self.info_rects: list = []      # 信息卡上可点的方块 (x, y, w, h, kind, when)
         self.info_hover = -1            # 鼠标停在哪一块上（-1 = 没有）
@@ -582,6 +608,9 @@ class UIState:
         self.toast_rect = (0.0, 0.0, 0.0, 0.0)
         self.toast_detail = ""          # 非空时：点提示条可以看/复制完整内容
         self.hint_shown = False
+        # 画布底下被系统面板 / dock 挡住的像素数（桌面壁纸渲染时才非 0）。
+        # 长卷与它的时刻标签得让开这一条，否则正好被面板压住（见 _draw_ribbon）。
+        self.bottom_inset = 0.0
 
 
 @dataclass
@@ -691,14 +720,23 @@ class SkyPainter:
         self._draw_skyline(cr, w, hs, scene, light)
         self._draw_ground(cr, w, hs, scene, az0, fov, light)
         self._draw_street(cr, w, hs, scene, light)
+        # 雨雪画在"窗外"那一层：窗台、玻璃反光、盆栽都在它前面。
+        # （以前它排在最后，雨会落在窗台和花盆上——那是"下在屋里"了。）
+        self._draw_precip(cr, w, h, scene)
         self._draw_vignette(cr, w, h, scene)
         self._draw_sill(cr, w, h, scene, az0, fov, sun_x, direct, hs)
-        self._draw_precip(cr, w, h, scene)
         self._draw_flash(cr, w, h, scene)
         if chrome and self.ui.show_ribbon:
-            self._draw_ribbon(cr, w, hs, scene)
+            self._draw_ribbon(cr, w, hs, scene, canvas_h=h)
+        else:
+            self.ui.ribbon_rect = (0.0, 0.0, 0.0, 0.0)
         if chrome and self.ui.show_info:
             self._draw_info(cr, w, h, scene, az0, fov, direct)
+        else:
+            # 卡片没画的时候，命中方块必须一起清掉：以前它们留在 ui 里，
+            # 空格收起卡片之后，点原来那块空白处照样会跳去预览别的时候。
+            self.ui.info_rects = []
+            self.ui.info_rows = []
         if chrome:
             self._draw_toast(cr, w, hs)
 
@@ -1689,26 +1727,77 @@ class SkyPainter:
             return
         mu = scene.mood
         darkness = clamp((-scene.sun_alt) / 12.0, 0.0, 1.0)
-        drop_col = mix((236, 242, 255), mu.horizon, 0.30 * (1 - darkness))
+        strength = clamp(scene.precip_strength, 0.0, 1.0)
+        # 白天雨丝其实比天空亮（迎着光能看见），夜里才发暗——以前一条公式
+        # 走到底，白天那点透明度让雨几乎看不见，于是"雨很糙"也看不出层次。
+        drop_col = mix((246, 250, 255), mu.horizon, 0.34 * (1.0 - darkness))
+        base_a = 0.32 + 0.40 * darkness
+        # 雨幕：雨大到一定程度，整幅画面上蒙一层水汽（雨越大越明显）
+        if scene.precip_kind == "rain" and strength > 0.30:
+            veil = cairo.LinearGradient(0, 0, 0, h)
+            vc = mix(mu.horizon, (198, 210, 232), 0.45)
+            a = 0.035 + 0.075 * strength
+            veil.add_color_stop_rgba(0, vc[0] / 255, vc[1] / 255, vc[2] / 255,
+                                     a * 0.55)
+            veil.add_color_stop_rgba(0.62, vc[0] / 255, vc[1] / 255, vc[2] / 255, a)
+            veil.add_color_stop_rgba(1, vc[0] / 255, vc[1] / 255, vc[2] / 255,
+                                     a * 1.25)
+            cr.set_source(veil)
+            cr.rectangle(0, 0, w, h)
+            cr.fill()
         cr.save()
         cr.set_line_cap(cairo.LINE_CAP_ROUND)
         wind = scene.wind_speed if scene.has_weather else 0.0
         to_dir = (scene.wind_dir + 180.0) % 360.0
         slant = math.sin(math.radians(((to_dir - 180 + 180) % 360) - 180)) * wind / 26.0
-        for x, y, ln, speed, a, thick in self.fx.drops:
+        # 雨丝的长度随雨量走：毛毛雨是 3-8 个像素的小斜线，暴雨才是长划子
+        len_scale = h * (0.0045 + 0.019 * strength)
+        # 一场大雨一帧有几百根雨丝，一根一次 stroke 是这一摊里最贵的一笔。
+        # 把"粗细 + 透明度"量化之后分桶，每桶合成一条路径只 stroke 一次——
+        # 几十次调用，画出来看不出差别。
+        buckets: dict = {}
+        for x, y, ln, _speed, a, thick, phase in self.fx.drops:
             px, py = x * w, y * h
-            L = ln * h * (0.5 + 0.5 * a)
+            L = len_scale * ln * (0.62 + 0.38 * a)
             dx = slant * L * 0.8
+            # 迎着光的那一侧亮一点，雨丝不那么"平"
+            alpha = a * base_a * (0.82 + 0.18 * math.sin(phase))
+            key = (round(thick * 4), round(alpha * 10))
+            buckets.setdefault(key, []).append((px, py, dx, L))
+        for (thick_q, alpha_q), segs in buckets.items():
             cr.set_source_rgba(drop_col[0] / 255, drop_col[1] / 255, drop_col[2] / 255,
-                               a * (0.30 + 0.45 * darkness))
-            cr.set_line_width(max(0.7, thick * w / 1400.0))
-            cr.move_to(px, py)
-            cr.line_to(px + dx, py + L)
+                               max(0.03, alpha_q / 10.0))
+            cr.set_line_width(max(0.55, (thick_q / 4.0 + 0.15) * w / 1500.0))
+            for px, py, dx, L in segs:
+                cr.move_to(px, py)
+                cr.line_to(px + dx, py + L)
             cr.stroke()
+        # 路面上溅起的小涟漪：一圈圈往外散开又淡掉
+        if self.fx.splashes:
+            hs = scene_height(h)
+            # 落在**窗外那条马路**上（窗台与窗框在它前面，由绘制的先后顺序挡掉）
+            road_y = (GROUND_TOP + 0.010) * hs
+            road_h = max(1.0, (SILL_Y - GROUND_TOP - 0.022) * hs)
+            rc = mix(drop_col, (255, 255, 255), 0.35)
+            for x, ph, size in self.fx.splashes:
+                px = x * w
+                py = road_y + ph * road_h
+                grow = 0.35 + 1.9 * (1.0 - abs(0.5 - ph) * 2.0)
+                rr = max(1.0, size * grow * (0.9 + 0.6 * strength) * w / 480.0)
+                fade = clamp(1.0 - ph * 1.15, 0.0, 1.0) ** 1.4
+                cr.set_source_rgba(rc[0] / 255, rc[1] / 255, rc[2] / 255,
+                                   fade * (0.38 + 0.40 * strength))
+                cr.set_line_width(max(0.9, w / 1500.0))
+                cr.save()
+                cr.translate(px, py)
+                cr.scale(1.0, 0.34)             # 俯视的一圈：压扁成路面上的椭圆
+                cr.arc(0, 0, rr, 0, TAU)
+                cr.restore()
+                cr.stroke()
         for x, y, r_, radius, phase, a in self.fx.flakes:
             px, py = x * w, y * h
             rr = max(0.9, radius * w / 1500.0)
-            cr.set_source_rgba(0.96, 0.97, 1.0, a * (0.32 + 0.5 * darkness))
+            cr.set_source_rgba(0.96, 0.97, 1.0, a * base_a)
             cr.arc(px, py, rr, 0, TAU)
             cr.fill()
         cr.restore()
@@ -1753,7 +1842,12 @@ class SkyPainter:
         idx = clamp(int(t * len(ui.ribbon)), 0, len(ui.ribbon) - 1)
         return ui.ribbon[idx][0]
 
-    def _draw_ribbon(self, cr, w, h, scene: Scene):
+    def _draw_ribbon(self, cr, w, h, scene: Scene, canvas_h=None):
+        """h 是"景色高度"（`scene_height` 算出来的），canvas_h 是整块画布的高度。
+
+        两者分开传，是因为"底部被面板挡掉多少"是按**整块画布**算的，而长卷的
+        位置是按景色高度排的。
+        """
         ui = self.ui
         if not ui.ribbon:
             return
@@ -1763,6 +1857,15 @@ class SkyPainter:
         rw = 0.93 * w
         rh = clamp(h * 0.026, 14.0, 24.0)
         y0 = RIBBON_Y * h
+        # 底下那条留白是"系统面板/dock"的地盘（壁纸是铺满整屏的，dock 会压在
+        # 上面）。长卷下面还有一行整点标签，得让它整个钻出面板之外——
+        # 否则就是用户说的"下面还是有点挡着"：标签一半藏进 dock 里。
+        canvas_h = canvas_h or h
+        label_size = max(8.0, min(h * 0.013, 12.0))
+        # 整点标签实际占的高度比字号大（Pango 一行约 1.4 倍），再留 10px 气口
+        limit = canvas_h - ui.bottom_inset - label_size * 1.45 - 10.0
+        if y0 + rh > limit:
+            y0 = max(canvas_h * 0.5, limit - rh)
         ui.ribbon_rect = (x0, y0, rw, rh)
         cr.save()
         rounded_rect(cr, x0, y0, rw, rh, rh * 0.42)
@@ -1870,7 +1973,10 @@ class SkyPainter:
 
         # 小时标签
         label_size = max(8.0, min(h * 0.013, 12.0))
-        label_y = min(y0 + rh + 3, h - label_size - 1.5)
+        # 兜底：整点标签也不能钻到系统面板底下去（上面的 limit 已经先让开过一次）
+        label_y = min(y0 + rh + 3,
+                      canvas_h - ui.bottom_inset - label_size - 3.0,
+                      h - label_size - 1.5)
         for hour in (0, 6, 12, 18, 24):
             hx = x0 + rw * (hour / 24.0)
             draw_text(cr, f"{hour:02d}" if hour < 24 else "24", hx, label_y,
@@ -1947,9 +2053,14 @@ class SkyPainter:
                             f"{phase_name_simple(scene.moon_phase)} {scene.moon_illum * 100:.0f}%",
                             note, "open", mr or ms))
         if scene.has_weather:
+            # 说"多大雨"用真实雨量那一句（毛毛雨 / 小雨 / 中雨…），代码表那套
+            # 说法只在没有雨量的时候顶上；雨量本身也写在旁边，看得见差别。
+            what = scene.precip_label or scene.weather_text
+            note = f"云量 {scene.cloud:.0f}%"
+            if scene.precip_kind != "none" and scene.precip_mm > 0:
+                note += f" · {scene.precip_mm:.1f} mm/时"
             rows.append(FactRow(self._weather_icon(scene), "窗外",
-                                f"{scene.weather_text} {scene.temp:.0f}°C",
-                                f"云量 {scene.cloud:.0f}%", "detail"))
+                                f"{what} {scene.temp:.0f}°C", note, "detail"))
             if scene.wind_speed:
                 rows.append(FactRow("wind", "风",
                                     f"{compass(scene.wind_dir)} {scene.wind_speed:.1f} km/h",
@@ -2010,6 +2121,8 @@ class SkyPainter:
             scene.when.strftime("%Y-%m-%d %H:%M"), scene.preview, scene.period_name,
             scene.location_name, scene.location_label,
             self.ui.info_hover, bool(self.ui.info_compact),
+            # 画不画那些"能点的东西"也是看得见的差别（壁纸上的卡片没有鼠标）
+            bool(self.ui.info_buttons),
             hover_dt.strftime("%H:%M") if hover_dt else "",
             scene.sun_alt >= -0.9, round(scene.moon_phase, 3),
             scene.has_weather, scene.weather_disabled, scene.weather_stale,
@@ -2017,6 +2130,7 @@ class SkyPainter:
             scene.weather_text, round(scene.cloud), round(scene.temp),
             round(scene.apparent), round(scene.humidity),
             round(scene.wind_speed, 1), round(scene.wind_dir),
+            scene.precip_kind, round(scene.precip_mm, 2),
             tuple(round(c) for c in scene.mood.horizon),
             tuple(sorted((k, str(v)) for k, v in scene.events.items())),
         )
@@ -2107,20 +2221,24 @@ class SkyPainter:
                           weight=Pango.Weight.MEDIUM)
         chip_text = f"预览 {scene.when.strftime('%H:%M')}" if scene.preview else "此刻"
         chip_w = (78 if scene.preview else 46) * scale
+        # 有收起箭头的时候，城市名不能压到它底下；壁纸上的卡片没有那颗箭头，
+        # 于是这里也不用白白让出 28 像素
+        head_room = (28 if self.ui.info_buttons else 6) * scale
         chip_x = min(cx + tw + 9 * scale,
-                     x + card_w - pad - chip_w - 28 * scale)
+                     x + card_w - pad - chip_w - head_room)
         cc = (255, 176, 96) if scene.preview else accent
         cr.set_source_rgba(cc[0] / 255, cc[1] / 255, cc[2] / 255, 0.26)
         rounded_rect(cr, chip_x, cy + 1.5 * scale, chip_w, 18 * scale, 9 * scale)
         cr.fill()
         draw_text(cr, chip_text, chip_x + chip_w / 2, cy + 3.5 * scale, 11 * scale,
                   (255, 255, 255), 0.94, align="center")
-        btn = 22 * scale
-        bx, by = x + card_w - pad - btn, cy + 0.5 * scale
-        self._icon_button(cr, "chevron-down" if compact else "chevron-up",
-                          bx + btn / 2, by + btn / 2, btn, (234, 240, 252), 0.74,
-                          hover=hover == len(rects))
-        rects.append((bx, by, btn, btn, "toggle", None))
+        if self.ui.info_buttons:
+            btn = 22 * scale
+            bx, by = x + card_w - pad - btn, cy + 0.5 * scale
+            self._icon_button(cr, "chevron-down" if compact else "chevron-up",
+                              bx + btn / 2, by + btn / 2, btn, (234, 240, 252), 0.74,
+                              hover=hover == len(rects))
+            rects.append((bx, by, btn, btn, "toggle", None))
         cy += head_h
 
         # ---- 大字时间 + 日期 ----
@@ -2170,15 +2288,26 @@ class SkyPainter:
             cr.fill()
             cr.restore()
             ly = ay + ah + 5 * scale
-            draw_icon(cr, "sunrise", ax0 + 6 * scale, ly + 6 * scale, 13 * scale,
+            # 这枚小图标与时刻**画在日出真正落在轨道上的那个位置**：轨道铺的是
+            # 整天，日出刻度以前却钉在左端，看着就像"日出=00:00"。
+            rx0 = ax0 + aw * clamp(f0, 0, 1)
+            rx1 = ax0 + aw * clamp(f1, 0, 1)
+            cr.set_source_rgba(0, 0, 0, 0.30)
+            cr.rectangle(rx0 - 0.5 * scale, ay - 1 * scale, 1.2 * scale, ah + 2 * scale)
+            cr.fill()
+            cr.rectangle(rx1 - 0.5 * scale, ay - 1 * scale, 1.2 * scale, ah + 2 * scale)
+            cr.fill()
+            ix = clamp(rx0, ax0, ax0 + aw - 44 * scale)
+            draw_icon(cr, "sunrise", ix + 6 * scale, ly + 6 * scale, 13 * scale,
                       icon_tint("sunrise"), 0.9)
-            draw_text(cr, sunr.strftime("%H:%M"), ax0 + 15 * scale, ly, 11 * scale,
+            draw_text(cr, sunr.strftime("%H:%M"), ix + 15 * scale, ly, 11 * scale,
                       (246, 240, 232), 0.68)
             tail = (f"还剩 {duration_zh(scene.daylight_left)}"
                     if scene.daylight_left else "今天已过去")
             ttw, _ = draw_text(cr, tail, 0, -1000, 11 * scale, (255, 255, 255), 0.0)
             draw_text(cr, tail, ax0 + aw - ttw, ly, 11 * scale, (250, 250, 255), 0.74)
-            rects.append((ax0, ay - 7 * scale, aw, ah + 16 * scale, "arc", None))
+            if self.ui.info_buttons:
+                rects.append((ax0, ay - 7 * scale, aw, ah + 16 * scale, "arc", None))
             cy += arc_h
 
         # ---- 一行行事实 ----
@@ -2221,17 +2350,21 @@ class SkyPainter:
                     # 小窗口里装不下就别硬挤：副值整条不画，也不截半句
                     nw, _ = draw_text(cr, row.note, 0, -1000, 11.5 * scale,
                                       (255, 255, 255), 0.0)
-                    # 右边那条"点了能跳过去"的小箭头也要留出位置
-                    room = 18 * scale if row.action == "open" else 12 * scale
+                    # 右边那条"点了能跳过去"的小箭头也要留出位置（壁纸上没有它）
+                    room = scale * (18 if (row.action == "open"
+                                           and self.ui.info_buttons) else 10)
                     if vx + vw + 7 * scale + nw <= rx + rw2 - room:
                         draw_text(cr, row.note, vx + vw + 7 * scale,
                                   cy + 2.5 * scale, 11.5 * scale,
                                   (214, 222, 238), 0.5)
                 if row.action == "open":
-                    draw_icon(cr, "chevron-right", rx + rw2 - 9 * scale,
-                              cy + badge / 2 + 1 * scale, 12 * scale,
-                              (236, 241, 252), 0.32)
-                rects.append((rx, ry, rw2, rh, row.action, row.when))
+                    # 那颗小箭头是"点了能跳过去"的意思；壁纸上没有鼠标，不画
+                    if self.ui.info_buttons:
+                        draw_icon(cr, "chevron-right", rx + rw2 - 9 * scale,
+                                  cy + badge / 2 + 1 * scale, 12 * scale,
+                                  (236, 241, 252), 0.32)
+                if self.ui.info_buttons:
+                    rects.append((rx, ry, rw2, rh, row.action, row.when))
                 cy += row_h
 
         # ---- 一句人话 ----
@@ -2245,19 +2378,21 @@ class SkyPainter:
                       (250, 250, 255), 0.82)
         cy += hint_h
 
-        rb = 20 * scale
-        rbx, rby = x + card_w - pad - rb, cy - 5 * scale
         # ---- 脚注：数据从哪来、什么时候问回来的 + 立刻刷新一次 ----
         # 一行里要塞下"来源 + 更新于几点"，窗口窄的时候先让短的顶上来：
         # 与其把字挤到刷新按钮底下（或截半句），不如少说几个字。
-        draw_text_room = (x + card_w - pad - rb - 10 * scale) - cx
+        # 壁纸上的那张卡没有刷新按钮，右下角整块都是给这行字的。
+        rb = 20 * scale if self.ui.info_buttons else 0.0
+        rbx, rby = x + card_w - pad - rb, cy - 5 * scale
+        draw_text_room = (x + card_w - pad - rb - (10 * scale if rb else 0.0)) - cx
         foot = self._foot_text(scene, cr, draw_text_room, 10 * scale)
         draw_text(cr, foot, cx, cy, 10 * scale, (200, 210, 230), 0.38)
-        self._icon_button(cr, "refresh", rbx + rb / 2, rby + rb / 2, rb,
-                          (228, 236, 250), 0.8,
-                          hover=hover == len(rects))
-        rects.append((rbx - 2 * scale, rby - 2 * scale, rb + 4 * scale,
-                      rb + 4 * scale, "refresh", None))
+        if self.ui.info_buttons:
+            self._icon_button(cr, "refresh", rbx + rb / 2, rby + rb / 2, rb,
+                              (228, 236, 250), 0.8,
+                              hover=hover == len(rects))
+            rects.append((rbx - 2 * scale, rby - 2 * scale, rb + 4 * scale,
+                          rb + 4 * scale, "refresh", None))
         cr.restore()
         return rects
 

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time as _time
 import urllib.parse
@@ -58,6 +59,84 @@ def code_text(code: int) -> str:
     return WMO_TEXT.get(int(code), "未知")
 
 
+# 各档降水的"底子强度"（0-1）：只有在拿不到真实雨量时才单独用它。
+# 数字是按"看起来多猛"排的：毛毛雨要明显轻于大雨，雷阵雨最重。
+_PRECIP_BASE = {
+    51: 0.10, 53: 0.17, 55: 0.26, 56: 0.17, 57: 0.26,      # 毛毛雨 / 冻毛毛雨
+    61: 0.30, 63: 0.50, 65: 0.78, 66: 0.50, 67: 0.78,      # 小雨 / 中雨 / 大雨
+    71: 0.22, 73: 0.42, 75: 0.66, 77: 0.16,                # 雪
+    80: 0.36, 81: 0.58, 82: 0.92, 85: 0.44, 86: 0.70,      # 阵雨 / 阵雪
+    95: 0.62, 96: 0.85, 99: 1.00,                          # 雷雨
+}
+# 毛毛雨那一族（含冻毛毛雨）：它们再怎么算也不该画成大雨
+DRIZZLE_CODES = frozenset({51, 53, 55, 56, 57})
+
+# 雨量 → 强度 的刻度点（mm/时, 0-1），中间按对数插值：
+# 0.1 mm/时 是"飘着几丝"，1 是小雨，8 是让人眯眼的雨，25 以上满格。
+_PRECIP_CURVE = (
+    (0.02, 0.03), (0.05, 0.07), (0.10, 0.13), (0.20, 0.20),
+    (0.50, 0.30), (1.00, 0.40), (2.00, 0.52), (4.00, 0.64),
+    (8.00, 0.78), (15.0, 0.90), (25.0, 1.00),
+)
+
+
+def clamp01(x: float) -> float:
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+
+def precip_intensity(precip_mm: float) -> float:
+    """降水量（mm/时）→ 0-1 的强度。跨数量级的东西要按对数看。"""
+    try:
+        mm = float(precip_mm or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if mm <= 0.0:
+        return 0.0
+    lo_mm, lo_v = _PRECIP_CURVE[0]
+    if mm < lo_mm:                      # 比"飘几丝"还小：按比例收着
+        return clamp01(lo_v * mm / lo_mm)
+    for (m0, v0), (m1, v1) in zip(_PRECIP_CURVE, _PRECIP_CURVE[1:]):
+        if mm <= m1:
+            span = math.log10(m1) - math.log10(m0)
+            t = (math.log10(mm) - math.log10(m0)) / span if span else 0.0
+            return clamp01(v0 + (v1 - v0) * t)
+    return 1.0
+
+
+def precip_label(code: int, precip_mm: float = 0.0) -> str:
+    """这一刻的雨有多大——**按真实雨量说话**，没有雨量才退回代码上的说法。
+
+    这是用户看得见的那句话（信息卡、详情、长卷悬停）。以前只有 WMO 代码，
+    于是"毛毛雨"和"大雨"配的文字都来自代码表；雨量既然在手上，就按雨强分档说。
+    分档（mm/时）刻意和 WMO 那几档对齐，免得同一份数据里"中雨"和"小雨"
+    自己打架：<0.2 毛毛雨（毛毛雨那一族 <0.6）、≤1.2 小雨、≤4.5 中雨、
+    ≤12 大雨、再往上暴雨。
+    """
+    n = int(code)
+    kind = precip_kind(n)
+    if kind == "none":
+        return ""
+    if kind == "snow":
+        return code_text(n)             # 雪不按"雨量"分档，照代码说
+    if n in (95, 96, 99):
+        return code_text(n)             # 雷阵雨（可能带冰雹）：照实说
+    try:
+        mm = max(0.0, float(precip_mm or 0.0))
+    except (TypeError, ValueError):
+        mm = 0.0
+    if mm <= 0.0:
+        return code_text(n)             # 没有雨量：代码说是什么就是什么
+    if mm < 0.2 or (n in DRIZZLE_CODES and mm < 0.6):
+        return "毛毛雨"
+    if mm <= 1.2:
+        return "小雨"
+    if mm <= 4.5:
+        return "中雨"
+    if mm <= 12.0:
+        return "大雨"
+    return "暴雨"
+
+
 def precip_kind(code: int) -> str:
     """降水类型：none / rain / snow。"""
     code = int(code)
@@ -69,18 +148,28 @@ def precip_kind(code: int) -> str:
 
 
 def precip_strength(code: int, precip_mm: float = 0.0) -> float:
-    """降水强度 0-1，用于决定雨丝的密度与速度。"""
-    table = {
-        51: 0.18, 53: 0.30, 55: 0.45, 56: 0.30, 57: 0.45,
-        61: 0.35, 63: 0.55, 65: 0.85, 66: 0.55, 67: 0.85,
-        71: 0.30, 73: 0.50, 75: 0.75, 77: 0.25,
-        80: 0.45, 81: 0.70, 82: 1.00, 85: 0.55, 86: 0.80,
-        95: 0.75, 96: 0.90, 99: 1.00,
-    }
-    base = table.get(int(code), 0.0)
-    if precip_mm:
-        base = max(base, min(1.0, precip_mm / 6.0))
-    return base
+    """降水强度 0-1：雨丝的密度、长度、速度、透明度都看它。
+
+    两条腿走路（以前只看 WMO 代码表，于是"毛毛雨"和"大雨"在画面上差不了多少）：
+
+    * **真实降水量**（mm/时）是主：雨量本身跨三个数量级（毛毛雨 0.1、
+      中雨 3、暴雨 30+），线性的刻度既不像画面也不像感觉，所以过一遍
+      对数刻度（见 `precip_intensity`）。
+    * WMO 代码只当"这一档大概多强"的**下限**：接口偶尔把雨量四舍五入成 0
+      （51 那档经常是 0.0），这时候至少还有代码兜着。
+
+    毛毛雨那一档另外封顶 0.34——用户看到的就是"毛毛雨"，不能画成大雨。
+    """
+    n = int(code)
+    base = _PRECIP_BASE.get(n, 0.0)
+    amount = precip_intensity(precip_mm)
+    if amount <= 0.0:
+        value = base                    # 没有雨量数字：以代码为准
+    else:
+        value = max(amount, base * 0.7)   # 以雨量为准，代码兜住下限
+    if n in DRIZZLE_CODES:
+        value = min(value, 0.34)
+    return clamp01(value)
 
 
 def is_thunder(code: int) -> bool:
