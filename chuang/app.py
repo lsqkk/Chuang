@@ -20,6 +20,7 @@ from . import diagnostics as diag
 from . import frames as framemod
 from . import infocard as factmod
 from . import keys as keymod
+from . import mainloop
 from . import tray as traymod
 from . import update as upmod
 from . import update_ui as upd
@@ -277,8 +278,9 @@ class ChuangWindow(Adw.ApplicationWindow):
                                           menu_model=menu, tooltip_text="更多")
         self.menu_button.set_focus_on_click(False)
         # 菜单弹层关掉之后焦点会留在弹层里那颗小按钮上（见 keys.Keys.focus_canvas）
-        GLib.idle_add(lambda: (self.keys.hook_menu_popover(self.menu_button),
-                               False)[1])
+        # 这一跳也得走 to_main：默认优先级的 idle 会被帧时钟饿死（见 mainloop.py）
+        mainloop.to_main(lambda: (self.keys.hook_menu_popover(self.menu_button),
+                                  False)[1])
         header.pack_end(self.menu_button)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)

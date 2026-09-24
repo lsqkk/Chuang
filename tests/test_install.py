@@ -143,9 +143,11 @@ class TestInstallFlow(unittest.TestCase):
         patch = mock.patch.object(updui.wallmod, "CACHE", root / "cache")
         patch.start()
         self.addCleanup(patch.stop)
-        # 后台线程里那句 GLib.idle_add：当场调用，省掉主循环
+        # 后台线程里那句"回主线程"：当场调用，省掉主循环。
+        # 它现在是 mainloop.to_main()（优先级要高于帧时钟，见 mainloop.py），
+        # 所以这里连 priority 这个关键字一起收下。
         patch = mock.patch.object(updui.GLib, "idle_add",
-                                  lambda func, *args: (func(*args), 0)[1])
+                                  lambda func, *args, **kw: (func(*args), 0)[1])
         patch.start()
         self.addCleanup(patch.stop)
 

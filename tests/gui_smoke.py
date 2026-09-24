@@ -86,7 +86,8 @@ def _weather_facts(win) -> str:
     return (f"ok={w.ok} 覆盖={w.day_span()} 数据地点={w.lat},{w.lon} "
             f"窗所在地点={win.weather.lat},{win.weather.lon} "
             f"是不是同一座城={w.matches(win.weather.lat, win.weather.lon)} "
-            f"旧数据={w.stale} 逐小时条数={len(w.hourly)}")
+            f"旧数据={w.stale} 逐小时条数={len(w.hourly)} "
+            f"忙={win.weather._busy} 错误={w.error!r}")
 
 
 def _isolate() -> Path:
@@ -715,7 +716,7 @@ def main() -> int:
         def step_after_first():
             poll(lambda: bool(win.weather.weather
                               and win.weather.weather.has_day(today)),
-                 step_far, 8.0)
+                 step_far, 14.0)
             return False
 
         def step_far():
@@ -725,7 +726,7 @@ def main() -> int:
             win._set_preview(_dt.combine(far, _dtime(14, 0), tzinfo=win._now().tzinfo))
             poll(lambda: bool(win.weather.weather
                               and win.weather.weather.has_day(far)),
-                 step_after_far, 8.0)
+                 step_after_far, 14.0)
             return False
 
         def step_after_far():
@@ -779,7 +780,8 @@ def main() -> int:
             popover.emit("closed")
             # 那一记回声是排到 idle 里做的（弹层拆完才动），所以**等它真的来**
             # 再看结果——固定等 60 毫秒在忙的时候会碰不上（CI 上翻过这种车）。
-            poll(lambda: bool(spy), step_after_popover, 3.0)
+            # 机器忙的时候这一记回声会晚一点（它是 idle，不是定时器）
+            poll(lambda: bool(spy), step_after_popover, 8.0)
             return False
 
         def step_after_popover():
@@ -821,10 +823,10 @@ def main() -> int:
 
     GLib.timeout_add_seconds(6, probe)
     # 兜底一：异步那几条要等后台线程（网络慢的时候会久一点）；到点还没收尾就报出来
-    GLib.timeout_add_seconds(75, lambda: (problems.append("超时：异步探针没有跑完"),
+    GLib.timeout_add_seconds(105, lambda: (problems.append("超时：异步探针没有跑完"),
                                           app.quit(), False)[-1])
     # 兜底二：万一连探针都没被调到（窗口没建起来之类），也要退出
-    GLib.timeout_add_seconds(120, lambda: (problems.append("超时：探针没有跑完"),
+    GLib.timeout_add_seconds(140, lambda: (problems.append("超时：探针没有跑完"),
                                           app.quit(), False)[-1])
     app.run([])
 

@@ -18,6 +18,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config as cfgmod
+from .mainloop import to_main
 from .weather import fallback_timezone, geocode, timezone_for
 
 
@@ -348,7 +349,7 @@ class CityDialog(Gtk.Window):
                 rows = geocode(text, 8)
             except Exception as exc:            # 网络错误
                 rows = [{"error": str(exc)}]
-            GLib.idle_add(self._fill, rows)
+            to_main(self._fill, rows)
 
         threading.Thread(target=worker, daemon=True, name="chuang-geocode").start()
         return False
@@ -418,7 +419,7 @@ class CityDialog(Gtk.Window):
 
         def worker():
             tz = timezone_for(lat, lon)
-            GLib.idle_add(self._manual_done, lat, lon, tz)
+            to_main(self._manual_done, lat, lon, tz)
 
         threading.Thread(target=worker, daemon=True, name="chuang-tz").start()
 

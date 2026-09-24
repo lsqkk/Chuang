@@ -14,8 +14,9 @@
 """
 
 import importlib.util
+import time as _time
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from chuang.scene import SkyEngine
@@ -101,13 +102,23 @@ class TestSceneSwitches(unittest.TestCase):
                            2, "关掉星空之后，天上那些星星还亮着")
 
     def test_turning_off_clouds_and_weather_fx_changes_the_sky(self):
+        """云与雨雪的开关：天气要按**今天**造（预报表只覆盖它自己的那几天）。"""
         from chuang.weather import Weather
-        weather = Weather(ok=True, fetched_at=1e9, code=63, cloud=95.0,
-                          temp=18.0, precip=2.0)
-        full, stride, _ = self._frame(when=MORNING, weather=weather)
-        no_cloud, _, _ = self._frame(when=MORNING, weather=weather,
+        from chuang.weather import HourPoint
+        now = datetime.now(TZ).replace(second=0, microsecond=0)
+        when = now.replace(hour=9, minute=20)
+        base = now.replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        weather = Weather(ok=True, fetched_at=_time.time(), code=63, cloud=95.0,
+                          temp=18.0, precip=2.0, lat=34.3416, lon=108.9398)
+        for h in range(48):
+            weather.hourly.append(HourPoint(base + timedelta(hours=h), 95.0, 63,
+                                            18.0, 60.0, 2.0))
+        weather.invalidate()
+        full, stride, scene = self._frame(when=when, weather=weather)
+        self.assertTrue(scene.has_weather, "造出来的这份天气没有落到场景里")
+        no_cloud, _, _ = self._frame(when=when, weather=weather,
                                      show_clouds=False)
-        no_rain, _, _ = self._frame(when=MORNING, weather=weather,
+        no_rain, _, _ = self._frame(when=when, weather=weather,
                                     show_weatherfx=False)
         self.assertGreater(self._diff_rows(full, no_cloud, stride, 0, self.h * 0.5),
                            10, "关掉云之后，天上那些云还在")

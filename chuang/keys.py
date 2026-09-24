@@ -25,6 +25,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib  # noqa: E402
 
 from . import actions as actionmod
+from .mainloop import to_main
 
 
 class Keys:
@@ -72,7 +73,7 @@ class Keys:
         self._hooked_popover = pop
 
         def restore(*_args):
-            GLib.idle_add(self.focus_canvas)
+            to_main(self.focus_canvas)
             return False
 
         pop.connect("closed", restore)

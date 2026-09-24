@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import __version__
+from .mainloop import to_main
 
 API = "https://api.open-meteo.com/v1/forecast"
 GEOCODE_API = "https://geocoding-api.open-meteo.com/v1/search"
@@ -847,7 +848,7 @@ class WeatherService:
                     # 一个字节都不动，只把这一天记下来、过一阵再说。
                     key = _day_key(start)
                     self._busy = False
-                    GLib.idle_add(self._note_day_failed, key)
+                    to_main(self._note_day_failed, key)
                     return
                 if w is not None:
                     w.stale = True          # 断网：接着显示上一份，并标明是旧的
@@ -855,7 +856,7 @@ class WeatherService:
                 else:
                     w = Weather(ok=False, error=str(exc)[:80])
             self._busy = False
-            GLib.idle_add(self._deliver, w, done)
+            to_main(self._deliver, w, done)
 
         threading.Thread(target=worker, daemon=True, name="chuang-weather").start()
         return True

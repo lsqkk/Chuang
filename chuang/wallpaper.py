@@ -442,6 +442,9 @@ class Worker:
 
         def work():
             from gi.repository import GLib
+            # 回主线程的那一跳必须走高优先级的 idle（见 mainloop.py）：
+            # 这一句放在线程里，和上面那行 GLib 导入同一个道理（沿用原来的姿势）
+            from .mainloop import to_main
             try:
                 self.painter.ui.show_info = show_info
                 self.painter.ui.info_compact = compact
@@ -470,9 +473,9 @@ class Worker:
                     ok, msg = True, "桌面壁纸已更新"
                     time.sleep(0.60)      # 等 shell 处理内容变化，再补一次提醒
                     touch(path)
-                GLib.idle_add(done, ok, msg, slot)
+                to_main(done, ok, msg, slot)
             except Exception as exc:
-                GLib.idle_add(done, False, f"渲染壁纸失败：{exc}", slot)
+                to_main(done, False, f"渲染壁纸失败：{exc}", slot)
             finally:
                 self._busy = False
                 self._lock.release()
@@ -490,6 +493,9 @@ class Worker:
 
         def work():
             from gi.repository import GLib
+            # 回主线程的那一跳必须走高优先级的 idle（见 mainloop.py）：
+            # 这一句放在线程里，和上面那行 GLib 导入同一个道理（沿用原来的姿势）
+            from .mainloop import to_main
             try:
                 # 画进"另一本相册"：桌面此刻正在看的那个目录一个字节都不动，
                 # 于是中途失败最多是这次没换成，绝不会留下一张空桌面。
@@ -517,14 +523,14 @@ class Worker:
                     render(p, self.painter, scene, self._az0(), size)
                     paths.append(p)
                     if i % 4 == 0 or i == frames - 1:
-                        GLib.idle_add(progress, i + 1, frames)
+                        to_main(progress, i + 1, frames)
                 xml = write_day_xml(paths, day)
                 ok, msg = apply_uri("file://" + quote(str(xml)))
                 if ok:
                     _prune_frame_dirs(keep=stage)   # 新的生效了才清旧的
-                GLib.idle_add(done, ok, msg)
+                to_main(done, ok, msg)
             except Exception as exc:
-                GLib.idle_add(done, False, f"生成动态壁纸失败：{exc}")
+                to_main(done, False, f"生成动态壁纸失败：{exc}")
             finally:
                 self._busy = False
                 self._lock.release()

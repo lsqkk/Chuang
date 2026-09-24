@@ -149,6 +149,30 @@ class TestModuleLayout(unittest.TestCase):
             self.assertTrue((PKG / name).exists(), f"少了 {name}")
 
 
+class TestMainThreadHops(unittest.TestCase):
+    """后台线程回主线程，只能走 `mainloop.to_main()`（**不能**用裸的 `GLib.idle_add`）。
+
+    2026-09-25 的 CI 红在这里：GLib 的空闲源只在一件优先级更高的事都没有时才被
+    调用，而 `idle_add` 的默认优先级低于帧时钟与各处定时器——机器一忙，主循环里
+    永远有事可做，那个 idle 就一直轮不到。表现是"天气抓回来了却送不到画面上"
+    与"菜单关掉之后焦点收不回画面"，本机用 8 个满载进程能稳定复现（见
+    `chuang/mainloop.py`）。这条静态检查盯着别有人再写回去。
+    """
+
+    ALLOWED = {"mainloop.py"}          # to_main 自己住在那里
+
+    def test_no_bare_idle_add(self):
+        problems = []
+        for path, src in _sources():
+            if path.name in self.ALLOWED:
+                continue
+            if "idle_add" in TestForbiddenApis._attributes(src):
+                problems.append(path.name)
+        self.assertEqual(problems, [],
+                         f"这些文件用了裸的 GLib.idle_add：{problems}"
+                         "（应该走 mainloop.to_main，否则满载时会被饿死）")
+
+
 class TestActionNames(unittest.TestCase):
     """`set_toggle("info_compact")` 这种名字写错一个字母 = 点了没反应。
 
