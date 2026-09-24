@@ -66,6 +66,10 @@ def main() -> None:
         painter = SkyPainter(seed=20260923)
         painter.ui.show_info = info
         painter.ui.show_ribbon = ribbon
+        # 最后一张是"桌面壁纸"那一路：桌面上没有鼠标，卡片上那些能点的东西
+        # （收起箭头 / 每行的小箭头 / 刷新）一概不画——与 wallpaper.render 一致
+        # （见 AGENTS.md §3.5），不然截图里会比真实的壁纸多出一排按钮。
+        painter.ui.info_buttons = name != "11-wallpaper.png"
         if ribbon:
             painter.ui.ribbon = engine.ribbon(day, weather)
             painter.ui.ribbon_surface = None

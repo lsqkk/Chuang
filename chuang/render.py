@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import threading
 import time as _time
 from dataclasses import dataclass
 from datetime import datetime
@@ -113,10 +114,15 @@ def y_for_alt(alt: float, h: float) -> float:
     return (HORIZON_Y + (GROUND_Y - HORIZON_Y) * t) * h
 
 
+# 项目里所有的字都走这一份字体表（`font()` 与下面量墨迹的 `text_ink()` 必须
+# 是同一份，否则"量出来的"与"画出来的"就对不上了）
+_FONT_FAMILY = ("Noto Sans CJK SC, Source Han Sans SC, WenQuanYi Micro Hei, "
+                "sans-serif")
+
+
 def font(cr, size, weights=Pango.Weight.NORMAL):
     layout = PangoCairo.create_layout(cr)
-    desc = Pango.FontDescription("Noto Sans CJK SC, Source Han Sans SC, "
-                                 "WenQuanYi Micro Hei, sans-serif")
+    desc = Pango.FontDescription(_FONT_FAMILY)
     desc.set_absolute_size(size * Pango.SCALE)
     desc.set_weight(weights)
     layout.set_font_description(desc)
@@ -173,18 +179,78 @@ def draw_text_bl(cr, text, x, baseline, size, color, alpha=1.0,
                      size, color, alpha, weight, align)
 
 
-def optical_shift(big_baseline: float, big_size: float, small_size: float) -> float:
-    """小字跟在大字旁边时，它的基线该放在哪儿。
+_INK_LOCAL = threading.local()
+_INK_CACHE: dict = {}
 
-    字号差不多（差不到 1.6 倍）时**共用基线**才是"齐"的；字号差得大时相反：
-    共用基线会让大字的下缘压住小字，小字看上去往下掉（用户对着截图说的
-    "温度飘到顶上去了 / 小字掉下去了"就是这一件事的两面）。
-    那就按**字面中线**对齐：大字中线的经验位置在 `基线 - 0.36 × 字号`，
-    小字中线在 `基线 - 0.38 × 字号`，两者相等即可解出小字的基线。
+
+def _ink_cr():
+    """量字用的 cairo 上下文：一张 1×1 的离屏图，只用它跑 Pango 量宽度与墨迹。
+
+    **别改用 `PangoCairo.font_map_get_default()`**：那个调用会让**之后**才 import
+    的 `gi.repository.Gio` 加载不出 override（PyGObject 的一个坑，本机复现：
+    `font_map_get_default()` 之后 `from chuang.infocard import ...` 直接抛
+    "Can not override a type ListModel, which is not in a gobject introspection
+    typelib"；`tests/test_info_card.py` 就是这么翻车的）。走 cairo 上下文没这个
+    问题，而且与画的时候（`font(cr, ...)`）用的是同一个字体图，量出来一模一样。
+
+    每个线程一份：壁纸那一路是在**渲染线程**里画卡片的（见 wallpaper.render），
+    而 cairo 上下文不是线程安全的东西，共用一份迟早会出怪事。
     """
-    if big_size < small_size * 1.6:
-        return big_baseline
-    return big_baseline - 0.36 * big_size + 0.38 * small_size
+    cr = getattr(_INK_LOCAL, "cr", None)
+    if cr is None:
+        cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+        _INK_LOCAL.cr = cr
+    return cr
+
+
+def text_ink(text: str, size: float, weight=Pango.Weight.NORMAL) -> tuple[float, float]:
+    """一行字**真正着墨**的那一块：相对基线的 (上缘, 下缘)（上缘是负数）。
+
+    Pango 的文本框（logical rect）是按字体的 ascent / descent 算的，里面既有
+    "19°"上边空着的一大截，也有"毛毛雨"底下多出来的那一点。要让两行字"看着齐"、
+    要让一枚图标跟旁边的大字"看着齐"，都得按着墨的这一块算中线——1.1.14 第二版
+    那两个"0.36 / 0.38"的经验值就差了 3~4 像素（用户第二次说的"没有上下居中"）。
+    字号差得大时用 `ink_baseline` 让两行的墨迹中线重合；字号差不多时（指标格里
+    的"太阳 / 南 173°"）**共用基线**更自然——两者的墨迹中线本来就差不到 1 像素。
+    """
+    key = (text, round(size, 2), int(weight))
+    hit = _INK_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        layout = font(_ink_cr(), size, weight)
+        layout.set_text(text or " ", -1)
+        ink, _logical = layout.get_pixel_extents()
+        base = layout.get_baseline() / Pango.SCALE
+        value = (float(ink.y) - base, float(ink.y + ink.height) - base)
+    except Exception:                    # noqa: BLE001 - 量不出来就退回字面高度
+        value = (-0.72 * size, 0.0)
+    if len(_INK_CACHE) > 240:
+        _INK_CACHE.clear()
+    _INK_CACHE[key] = value
+    return value
+
+
+def ink_baseline(center: float, text: str, size: float,
+                 weight=Pango.Weight.NORMAL) -> float:
+    """把这一行字的**墨迹中线**放在 center 上，返回它的基线（给 draw_text_bl）。"""
+    top, bottom = text_ink(text, size, weight)
+    return center - (top + bottom) / 2.0
+
+
+# 每枚图标的墨迹中线相对**方框中心**偏多少（单位：半径 r）。
+# 用 200 磅的图逐个量过（画进离屏图取 alpha 的包围盒）：云、风、雪这几枚的墨
+# 偏在上半部（雨丝与风钩挂在下边、云的底又是平的），不补这一下，图标跟旁边那行
+# 大字就差着两三个像素——用户说的"没有上下居中"里有它一份。
+_ICON_INK_BIAS = {
+    "cloud": -0.135, "wind": -0.205, "snow": -0.055, "rain": 0.010,
+    "sunrise": -0.330, "sunset": 0.090, "refresh": -0.130,
+}
+
+
+def icon_ink_y(kind: str, center: float, size: float) -> float:
+    """要让这枚图标的**墨迹**中线落在 center 上，该给 draw_icon 的中心 y。"""
+    return center - _ICON_INK_BIAS.get(kind, 0.0) * (size / 2.0)
 
 
 def rounded_rect(cr, x, y, w, h, r):
@@ -778,6 +844,8 @@ class SkyPainter:
     F_HERO_TEMP = 27.0
     F_HERO_WHAT = 14.0
     F_HERO_SUB = 11.0
+    F_ANCHOR = 15.0       # 没有天气时主角块上那一句（"未联网 · 仅天文模式"）
+    HERO_GAP = 0.62       # 主角块右列两行的墨迹气口（× 天气那句的字号）
     F_LABEL = 11.5        # 指标格的标题（"太阳"）
     F_VALUE = 14.5        # 指标格的数值（"南 173°"）
     F_NOTE = 10.5         # 指标格的副值（"仰角 54.6°"）
@@ -2369,6 +2437,9 @@ class SkyPainter:
 
         离屏图裁多大、卡片画多高，用的是同一份数字——分开算迟早会对不上
         （不是被裁掉一条边，就是底下多出一块空白）。
+        1.1.14 第三版起连**每一条的 y** 也在这儿算：`_paint_info` 拿 `L["y"]` 直接下笔，
+        不再自己一段段 `+=`（两边各算一遍的结果就是"卡片底下时而多一截空白、
+        时而挤掉半行"）。
 
         版式分三层（1.1.13 重排）：**主角**是此刻的天气（大字温度那一块），
         **指标格**是太阳月亮这几个"点了能跳过去"的时刻（两列，省一半高度），
@@ -2379,6 +2450,7 @@ class SkyPainter:
         # 因为字号缩过头就没法读了——小窗口里宁可卡片高一点。
         scale = clamp(min(w / 1000.0, h / 620.0), 0.78, 1.5)
         text_scale = max(scale, self.TEXT_FLOOR)
+        ts = text_scale
         pad = 16 * scale
         card_w = clamp(w * 0.44, 316 * scale, 452 * scale)
         badge_w = 17 * scale                    # 指标格里那枚小图标的方框
@@ -2392,14 +2464,22 @@ class SkyPainter:
         sunr = scene.events.get("sunrise")
         suns = scene.events.get("sunset")
         show_arc = bool(sunr and suns and suns > sunr) and not compact
-        head_h = 30 * scale
-        time_h = (32 if compact else 42) * scale
-        hero_h = 0.0 if compact else (62 * scale if hero is not None else 0.0)
-        arc_h = 30 * scale if show_arc else 0
-        div_h = 12 * scale if not compact else 0
+        # ---- 竖向节奏（1.1.14 第三版整体放松了一档，尤其是"段与段之间"）----
+        # 每一条的高度里**含了它下边那条气口**，最后一条除外；`_paint_info`
+        # 照着 L["y"] 画，所以这里改了、那边自然跟上。
+        head_h = 31 * scale                     # 城市 · 此刻（收起的箭头在里面）
+        time_h = (32 if compact else 44) * scale
+        hero_pad = 9 * scale                    # 主角块里内容到块边的留白
+        hero_tail = 14 * scale                  # 主角块 → 下面那条分隔线
+        arc_h = 33 * scale if show_arc else 0
+        div_h = 11 * scale                      # 中间那条分隔线 → 指标格
         # 指标格：标题与数值一行、副值一行。行距要留够——之前 33 太小，
         # 副值的下缘几乎贴到两行之间那条分隔线上（用户看到的"挤"）。
-        cell_h = 38 * scale
+        # **按字号算，不按排版尺度算**：小窗口里字号有下限（TEXT_FLOOR），
+        # 拿 scale 算出来的格子会把两行挤在一起（700×560 实测只剩 3 像素）。
+        cell_line_gap = 17 * ts               # 格子里两行墨迹中线的距离
+        cell_h = 28.6 * ts + 12 * scale
+        grid_tail = 10 * scale                  # 指标格 → 小字条
         # 一列还是两列：**先算最宽的那一格放不放得下**。放不下就改成一列
         # （卡片高一点，但字不会溢到隔壁格里）——傍晚那几行是"在西方地平线下"
         # 这种长句，窄窗口里两列排必然会撞车（用户截图里就是这个）。
@@ -2416,24 +2496,49 @@ class SkyPainter:
                       for r in grid), default=0.0)
         grid_cols = 2 if two_col_w >= widest else 1
         grid_lines = 0 if compact else ((len(grid) + grid_cols - 1) // grid_cols)
-        grid_h = grid_lines * cell_h if grid_lines else 0.0
-        chip_gap = 7 * scale
+        chip_gap = 8 * scale                    # 小字条行与行之间
         chip_w = card_w - pad * 2
         # 小字条按"能放下几个就放几个"折行（见 _chip_rows）
         chip_rows = (self._chip_rows(chips, chip_w, text_scale) if chips else [])
-        chip_line_h = 24 * scale
-        chip_h = (len(chip_rows) * (chip_line_h + chip_gap) + 2 * scale
+        chip_line_h = 26 * scale
+        chip_h = (len(chip_rows) * (chip_line_h + chip_gap) - chip_gap
                   if chip_rows else 0.0)
-        hint_h = 20 * scale * len(hint_lines) + 8 * scale
-        foot_h = 24 * scale
+        hint_top = 12 * scale                   # 小字条 → "一句人话"
+        hint_line_h = 22 * scale
+        foot_h = 30 * scale                     # 脚注那一行 + 到卡片底边的留白
+        # 主角块的高度**按墨迹量**：左边那两样（图标 + 大字温度）与右边那一列
+        # （天气 + 副行）都要落在块的中线上，块高不够就会挤在一起。
+        hero_block = self._hero_block_h(scene, hero, ts, hero_pad) \
+            if (hero is not None and not compact) else 0.0
+        hero_band = (hero_block + hero_tail) if hero_block else 0.0
 
-        def total(chips_h: float, hint_n: int, cell: float, lines: int,
-                  arc: float) -> float:
-            return (pad + head_h + time_h + hero_h + arc + div_h + lines * cell
-                    + (9 * scale if (lines and chips_h) else 0.0) + chips_h
-                    + (20 * scale * hint_n + 8 * scale) + foot_h + pad * 0.5)
+        def bands(chips_h: float, hint_n: int, cell: float, lines: int) \
+                -> list[tuple[str, float]]:
+            """从上到下一条一条排：每条的 y 与卡片总高都从这里出。"""
+            out = [("head", head_h), ("time", time_h)]
+            if show_arc:
+                out.append(("arc", arc_h))
+            if hero_band:
+                out.append(("hero", hero_band))
+            if lines:
+                out.append(("divider", div_h))
+                out.append(("grid", lines * cell + grid_tail))
+            if chips_h:
+                out.append(("chips", chips_h))
+            if hint_n:
+                out.append(("hint", hint_top + hint_line_h * hint_n))
+            out.append(("foot", foot_h))
+            return out
 
-        card_h = total(chip_h, len(hint_lines), cell_h, grid_lines, arc_h)
+        def lay_out(items: list[tuple[str, float]]):
+            y_of: dict[str, float] = {}
+            pos = pad * 0.75                    # 卡片顶边到第一条之间的留白
+            for name, height in items:
+                y_of[name] = pos
+                pos += height
+            return y_of, pos
+
+        y_of, card_h = lay_out(bands(chip_h, len(hint_lines), cell_h, grid_lines))
         # **卡片不许比窗口还高**（小窗口 420×300 时一列版式会到 340 像素高，
         # 底下那截就跑到窗口外面去了）。放不下就按"最不重要的先去掉"逐级降：
         #   1 少说一句人话 → 2 收起小字条 → 3 指标格不写副值 → 4 连指标格一起收
@@ -2446,13 +2551,13 @@ class SkyPainter:
             elif level == 2:
                 chip_rows, chip_h = [], 0.0
             elif level == 3:
-                # 指标格只留"标题 + 数值"那一行（副值不写），一行 24 像素
-                cell_h = 24 * scale
-                grid_h = grid_lines * cell_h if grid_lines else 0.0
+                # 指标格只留"标题 + 数值"那一行（副值不写）
+                cell_h = 11 * ts + 8 * scale
             else:
                 # 最后手段：连指标格一起收（太阳月亮这些在长卷上也能看）
-                grid, grid_lines, grid_h = [], 0, 0.0
-            card_h = total(chip_h, len(hint_lines), cell_h, grid_lines, arc_h)
+                grid, grid_lines = [], 0
+            y_of, card_h = lay_out(bands(chip_h, len(hint_lines), cell_h,
+                                         grid_lines))
         return {
             "scale": scale, "tscale": text_scale, "pad": pad,
             "card_w": card_w, "card_h": card_h,
@@ -2460,14 +2565,65 @@ class SkyPainter:
             "chips": chips, "chip_rows": chip_rows,
             "compact": compact, "hint_lines": hint_lines,
             "show_arc": show_arc, "sunr": sunr, "suns": suns,
-            "head_h": head_h, "time_h": time_h, "hero_h": hero_h,
-            "arc_h": arc_h, "div_h": div_h, "cell_h": cell_h,
-            "grid_cols": grid_cols, "grid_lines": grid_lines, "grid_h": grid_h,
+            "y": y_of, "hero_block": hero_block, "cell_h": cell_h,
+            "cell_line_gap": cell_line_gap,
+            "grid_cols": grid_cols, "grid_lines": grid_lines,
             "chip_gap": chip_gap, "chip_w": chip_w, "chip_line_h": chip_line_h,
-            "chip_h": chip_h, "hint_h": hint_h, "foot_h": foot_h,
+            "foot_h": foot_h,
+            "hint_top": hint_top, "hint_line_h": hint_line_h,
             "notes": level < 3, "dense": level,
             "accent": scene.mood.horizon,
         }
+
+    def _hero_texts(self, scene: Scene, hero) -> tuple[str, str, str]:
+        """主角块上的三样字：大字温度 / 右边那句话天气 / 它底下那一行小字。
+
+        没有天气时（"未联网 · 仅天文模式"）温度那一格空着，只有右边那两样。
+        """
+        if hero is None:
+            return "", "", ""
+        if not scene.has_weather:
+            return "", hero.value, hero.note or ""
+        return (f"{scene.temp:.0f}°",
+                scene.precip_label or scene.weather_text or hero.value,
+                self._hero_sub(scene))
+
+    def _hero_block_h(self, scene: Scene, hero, ts: float,
+                      hero_pad: float) -> float:
+        """主角块该多高：按**墨迹**算，不按字体的 ascent/descent。
+
+        块里要放两样：左边那行大字温度、右边那两行（天气 + 副行）。高的那个
+        加上下留白就是块高——留白不够，温度与副行就会互相挤（1.1.14 那版把
+        块高写成 `62*scale` 的死数，一换内容就不对了）。
+        没有天气时右边只有**一行**"为什么没有"（+ 一小段注脚），别按两行算，
+        不然那一块会平白高出一行。
+        """
+        temp, what, sub = self._hero_texts(scene, hero)
+        if temp:
+            top, bottom = text_ink(temp, self.F_HERO_TEMP * ts, Pango.Weight.LIGHT)
+            inner = bottom - top
+            wt, wb = text_ink(what, self.F_HERO_WHAT * ts)
+            st, sb = text_ink(sub, self.F_HERO_SUB * ts)
+            inner = max(inner, (wb - wt) + self.HERO_GAP * self.F_HERO_WHAT * ts
+                        + (sb - st))
+        else:
+            top, bottom = text_ink(what, self.F_ANCHOR * ts, Pango.Weight.MEDIUM)
+            inner = bottom - top
+        return inner + 2 * hero_pad
+
+    def _date_text(self, scene: Scene, room: float, size: float) -> str:
+        """大字时间右边那行日期：窗口窄的时候**先说短的**。
+
+        它跟底下的脚注一样是"能说多少说多少"——宁可少写"金色时刻"，也不让它
+        伸出卡片外面（小窗口里以前会探出边框，被离屏图硬切掉半句话）。
+        """
+        weekday = "一二三四五六日"[scene.when.weekday()]
+        head = f"{scene.when.month} 月 {scene.when.day} 日 · 周{weekday}"
+        for variant in (f"{head} · {scene.period_name}", head,
+                        f"{scene.when.month}/{scene.when.day}"):
+            if self._text_w(variant, size) <= room:
+                return variant
+        return f"{scene.when.month}/{scene.when.day}"
 
     def _info_groups(self, scene: Scene):
         """把 `_rows()` 那几行分成三层：主角 / 指标格 / 小字条。
@@ -2587,15 +2743,16 @@ class SkyPainter:
         """真正下笔的那一遍：画在离屏图上，返回这张卡上所有能点的方块。"""
         scale, pad, card_w, card_h = L["scale"], L["pad"], L["card_w"], L["card_h"]
         ts = L["tscale"]                     # 字号用的尺度（有下限，见 _info_layout）
-        rows, compact = L["rows"], L["compact"]
+        ymap = L["y"]                        # 每一条的上沿都在 _info_layout 里算好了
+        compact = L["compact"]
         hero, grid = L["hero"], L["grid"]
         chip_rows, chip_line_h = L["chip_rows"], L["chip_line_h"]
-        chip_gap, hero_h = L["chip_gap"], L["hero_h"]
-        cell_h, grid_lines, grid_h = L["cell_h"], L["grid_lines"], L["grid_h"]
+        chip_gap, hero_block = L["chip_gap"], L["hero_block"]
+        cell_h = L["cell_h"]
         hint_lines = L["hint_lines"]
         sunr, suns, show_arc = L["sunr"], L["suns"], L["show_arc"]
-        head_h, time_h, arc_h = L["head_h"], L["time_h"], L["arc_h"]
-        div_h, hint_h = L["div_h"], L["hint_h"]
+        hint_top, hint_line_h = L["hint_top"], L["hint_line_h"]
+        foot_h = L["foot_h"]
         accent = L["accent"]
         hover = self.ui.info_hover
         rects: list = []
@@ -2629,19 +2786,22 @@ class SkyPainter:
         cr.stroke()
 
         cx = x + pad
-        cy = y + pad * 0.75
 
         # ---- 抬头：城市 · 此刻/预览 · 收起 ----
-        # 这一版所有文字都按**基线**排（draw_text_bl）：同一条基线上 15.5 磅的
-        # 城市名与 11 磅的"此刻"标签才是齐的；按文本框左上角对齐会差出好几个
-        # 像素，看上去就是"有的偏上、有的偏下"。
+        # 卡片上的字与图标一律按**墨迹中线**对齐（见 text_ink）：15.5 磅的城市名、
+        # 11 磅的"此刻"标签、右下角那枚方按钮，中线在同一条线上才叫"一条线"；
+        # 按文本框左上角（或共用基线）对齐都会差出好几个像素。以前收起箭头就比
+        # 城市名高出 2~3 像素，看着像没摆平。
+        cy = y + ymap["head"]
+        head_mid = cy + 12 * scale
         name = scene.location_name or scene.location_label or ""
-        base_head = cy + 15 * scale
+        base_head = ink_baseline(head_mid, name, self.F_CITY * ts,
+                                 Pango.Weight.MEDIUM)
         tw, _ = draw_text_bl(cr, name, cx, base_head, self.F_CITY * ts,
                              (240, 244, 252), 0.94, weight=Pango.Weight.MEDIUM)
         chip_text = f"预览 {scene.when.strftime('%H:%M')}" if scene.preview else "此刻"
         chip_w = (78 if scene.preview else 46) * scale
-        chip_h = 19 * scale
+        tag_h = 19 * scale
         # 有收起箭头的时候，城市名不能压到它底下；壁纸上的卡片没有那颗箭头，
         # 于是这里也不用白白让出 28 像素
         head_room = (30 if self.ui.info_buttons else 6) * scale
@@ -2649,41 +2809,43 @@ class SkyPainter:
                      x + card_w - pad - chip_w - head_room)
         cc = (255, 176, 96) if scene.preview else accent
         cr.set_source_rgba(cc[0] / 255, cc[1] / 255, cc[2] / 255, 0.26)
-        rounded_rect(cr, chip_x, base_head - 13 * scale, chip_w, chip_h,
-                     chip_h / 2)
+        rounded_rect(cr, chip_x, head_mid - tag_h / 2, chip_w, tag_h, tag_h / 2)
         cr.fill()
-        draw_text_bl(cr, chip_text, chip_x + chip_w / 2, base_head,
+        draw_text_bl(cr, chip_text, chip_x + chip_w / 2,
+                     ink_baseline(head_mid, chip_text, self.F_LABEL * ts),
                      self.F_LABEL * ts,
                      (255, 255, 255), 0.94, align="center")
         if self.ui.info_buttons:
             btn = 23 * scale
             bx = x + card_w - pad - btn
-            by = base_head - 8 * scale - btn / 2
+            by = head_mid - btn / 2
             self._icon_button(cr, "chevron-down" if compact else "chevron-up",
                               bx + btn / 2, by + btn / 2, btn, (234, 240, 252), 0.74,
                               hover=hover == len(rects))
             rects.append((bx, by, btn, btn, "toggle", None))
-        cy += head_h
 
         # ---- 大字时间 + 日期 ----
+        cy = y + ymap["time"]
         time_size = (self.F_TIME * 0.78 if compact else self.F_TIME) * ts
+        time_text = scene.when.strftime("%H:%M")
         base_time = cy + time_size * 0.78
-        tw, _ = draw_text_bl(cr, scene.when.strftime("%H:%M"), cx, base_time,
-                             time_size, (255, 255, 255), 0.97,
-                             weight=Pango.Weight.LIGHT)
+        tw, _ = draw_text_bl(cr, time_text, cx, base_time, time_size,
+                             (255, 255, 255), 0.97, weight=Pango.Weight.LIGHT)
         weekday = "一二三四五六日"[scene.when.weekday()]
-        # 日期那一行跟着大字时间走：字号差一倍以上，**按视觉中线对齐**才齐
-        # （共用基线的话大字的下缘压着小字，小字看着就往下掉）
-        draw_text_bl(cr, f"{scene.when.month} 月 {scene.when.day} 日 · 周{weekday}"
-                         f" · {scene.period_name}",
-                     cx + tw + 10 * scale,
-                     optical_shift(base_time, time_size, self.F_DATE * ts),
-                     self.F_DATE * ts,
-                     (226, 232, 245), 0.60)
-        cy += time_h
+        date_text = self._date_text(
+            scene, (x + card_w - pad) - (cx + tw + 10 * scale), self.F_DATE * ts)
+        # 日期那一行跟着大字时间走，**按墨迹中线对齐**：字号差一倍以上时共用基线
+        # 会让大字的下缘压着小字（小字看着往下掉），而那两个"0.36 / 0.38"的
+        # 经验值又差着 3~4 像素——现在量的是真实的墨迹。
+        tt, tb = text_ink(time_text, time_size, Pango.Weight.LIGHT)
+        draw_text_bl(cr, date_text, cx + tw + 10 * scale,
+                     ink_baseline(base_time + (tt + tb) / 2.0, date_text,
+                                  self.F_DATE * ts),
+                     self.F_DATE * ts, (226, 232, 245), 0.60)
 
         # ---- 日弧：日出到日落，此刻在哪儿 ----
         if show_arc:
+            cy = y + ymap["arc"]
             ax0 = cx
             aw = card_w - pad * 2
             ah = 5 * scale
@@ -2728,22 +2890,28 @@ class SkyPainter:
             cr.rectangle(rx1 - 0.5 * scale, ay - 1 * scale, 1.2 * scale, ah + 2 * scale)
             cr.fill()
             ix = clamp(rx0, ax0, ax0 + aw - 44 * scale)
-            draw_icon(cr, "sunrise", ix + 6 * scale, ly + 6 * scale, 13 * scale,
+            # 这一行也是"一枚图标 + 两行字"，同样按墨迹中线对齐（见 text_ink）：
+            # 以前用文本框左上角定位，日出那枚图标比它旁边的时刻高出 3~4 像素。
+            sun_text = sunr.strftime("%H:%M")
+            sun_mid = ly + 8 * scale
+            draw_icon(cr, "sunrise", ix + 6 * scale,
+                      icon_ink_y("sunrise", sun_mid, 13 * scale), 13 * scale,
                       icon_tint("sunrise"), 0.9)
-            draw_text(cr, sunr.strftime("%H:%M"), ix + 15 * scale, ly, 11 * scale,
-                      (246, 240, 232), 0.68)
+            draw_text_bl(cr, sun_text, ix + 15 * scale,
+                         ink_baseline(sun_mid, sun_text, 11 * scale),
+                         11 * scale, (246, 240, 232), 0.68)
             tail = (f"还剩 {duration_zh(scene.daylight_left)}"
                     if scene.daylight_left else "今天已过去")
-            ttw, _ = draw_text(cr, tail, 0, -1000, 11 * scale, (255, 255, 255), 0.0)
-            draw_text(cr, tail, ax0 + aw - ttw, ly, 11 * scale, (250, 250, 255), 0.74)
+            draw_text_bl(cr, tail, ax0 + aw,
+                         ink_baseline(sun_mid, tail, 11 * scale),
+                         11 * scale, (250, 250, 255), 0.74, align="right")
             if self.ui.info_buttons:
                 rects.append((ax0, ay - 7 * scale, aw, ah + 16 * scale, "arc", None))
-            cy += arc_h
 
         # ---- 主角：此刻的天气（这张卡上最大的那一块） ----
         if not compact and hero is not None:
-            hy = cy
-            hh = hero_h - 8 * scale
+            hy = y + ymap["hero"]
+            hh = hero_block
             hx = cx - 6 * scale
             hw = card_w - pad * 2 + 12 * scale
             idx = len(rects)
@@ -2755,46 +2923,51 @@ class SkyPainter:
             cr.fill()
 
             badge = 26 * scale
-            # 主角块的竖向节奏：**温度与右边那句天气按"字面中线"对齐**，不是按
-            # 基线对齐。共用基线时，27 磅的温度下缘对齐 14 磅的"毛毛雨"，温度的
-            # 字面中心会高出小半行——看上去就是"温度飘到顶上去了"（用户就是这么
-            # 说的）。所以：先算出右边那句话的基线，再把它往上挪半个行高差。
+            # 主角块的竖向节奏（1.1.14 第三版重排）：**左边那两样——天气图标与大字温度
+            # ——落在块的中线上**，右边那一列（天气 + 副行）也整组居中。
+            # 只让"左列跟右列的第一行对齐"（1.1.14 第二版就是那样）时，左列一定
+            # 偏在块的上半部：用户第二次说的"温度和天气图标没有上下居中"就是它。
+            # 对齐量的是**墨迹**（text_ink / icon_ink_y）——真正着墨的那一块的
+            # 中线才是眼睛看的中线，文本框与"0.36 经验值"都不是。
             T = self.F_HERO_TEMP * ts
             C = self.F_HERO_WHAT * ts
             S = self.F_HERO_SUB * ts
-            pad_v = max(4 * scale, (hh - (0.36 * T + 1.73 * C + 0.22 * S)) / 2.0)
-            base_temp = hy + pad_v + 0.72 * T
-            base_what = optical_shift(base_temp, T, C)
-            base_sub = base_what + 1.35 * C
-            base_h1, base_h2 = base_temp, base_sub
+            temp_text, what, sub = self._hero_texts(scene, hero)
+            mid = hy + hh / 2.0
+            icon_size = badge * 0.92
             # 图标与文字的左边线跟下面的指标格**对齐**（都是 cx 起）
             draw_icon(cr, hero.icon, hx + 6 * scale + badge / 2,
-                      base_temp - 0.36 * T,      # 图标对齐温度的视觉中线
-                      badge * 0.92, icon_tint(hero.icon), 0.95,
+                      icon_ink_y(hero.icon, mid, icon_size),
+                      icon_size, icon_tint(hero.icon), 0.95,
                       phase=scene.moon_phase)
             tx = hx + 6 * scale + badge + 9 * scale
-            if scene.has_weather:
+            if temp_text:
                 # **两列**：左边温度，右边天气与那行小字。右边这一列钉在固定的 x 上
                 # ——以前它是"跟在温度后面 9 像素"，于是温度是 21° / 9° / -12°
                 # 时，右边那两行会跟着左右挪，看着就是"随手摆的、没对齐"。
-                temp_text = f"{scene.temp:.0f}°"
                 slot = max(66 * scale,
                            self._text_w(temp_text, self.F_HERO_TEMP * ts))
                 rx = tx + slot + 10 * scale
-                vw, _ = draw_text_bl(cr, f"{scene.temp:.0f}°", tx, base_h1,
-                                     self.F_HERO_TEMP * ts, (255, 255, 255), 0.97,
-                                     weight=Pango.Weight.LIGHT)
-                what = scene.precip_label or scene.weather_text or hero.value
-                draw_text_bl(cr, what, rx, base_what, C,
-                             (238, 242, 250), 0.88)
-                draw_text_bl(cr, self._hero_sub(scene), rx, base_sub, S,
-                             (208, 219, 238), 0.62)
+                draw_text_bl(cr, temp_text, tx,
+                             ink_baseline(mid, temp_text, T, Pango.Weight.LIGHT),
+                             T, (255, 255, 255), 0.97, weight=Pango.Weight.LIGHT)
+                # 右列：两行当成一整块居中（块的中线就是温度的中线）
+                wt, wb = text_ink(what, C)
+                st, sb = text_ink(sub, S)
+                gap = self.HERO_GAP * self.F_HERO_WHAT * ts
+                group_h = (wb - wt) + gap + (sb - st)
+                base_what = mid - group_h / 2.0 - wt
+                base_sub = base_what + wb + gap - st
+                draw_text_bl(cr, what, rx, base_what, C, (238, 242, 250), 0.88)
+                draw_text_bl(cr, sub, rx, base_sub, S, (208, 219, 238), 0.62)
             else:
                 # 没有天气：老实说为什么没有，别摆一个假的度数在那儿
                 # 整块垂直居中、副值跟在右边同一行上——这一段本来就是一句话，
                 # 拆成两行会让那块板子显得又空又吊。
-                base_h1 = hy + hh * 0.5 + 0.36 * 15 * ts
-                vw, _ = draw_text_bl(cr, hero.value, tx, base_h1, 15 * ts,
+                base_h1 = ink_baseline(mid, hero.value, self.F_ANCHOR * ts,
+                                       Pango.Weight.MEDIUM)
+                vw, _ = draw_text_bl(cr, hero.value, tx, base_h1,
+                                     self.F_ANCHOR * ts,
                                      (238, 242, 250), 0.92,
                                      weight=Pango.Weight.MEDIUM)
                 if hero.note:
@@ -2802,14 +2975,15 @@ class SkyPainter:
                                  self.F_HERO_SUB * ts, (208, 219, 238), 0.58)
             if self.ui.info_buttons:
                 rects.append((hx, hy, hw, hh, "detail", None))
-            cy += hero_h
 
         # ---- 指标格：太阳 / 日出 / 日落 / 月亮（两列，各是一个可以点过去的时刻）----
         if not compact and grid:
+            # 主角块与指标格之间那一条分隔线（**两行之间**原来还有一条，1.1.14
+            # 去掉了：每一格自己就有图标方框与两行字，中间再横一道只是噪点）
             cr.set_source_rgba(1, 1, 1, 0.09)
-            cr.rectangle(cx, cy + 1 * scale, card_w - pad * 2, 1)
+            cr.rectangle(cx, y + ymap["divider"], card_w - pad * 2, 1)
             cr.fill()
-            cy += div_h
+            cy = y + ymap["grid"]
             cols = L["grid_cols"]
             gap = 8 * scale
             cw = (card_w - pad * 2 - gap * (cols - 1)) / cols
@@ -2821,27 +2995,28 @@ class SkyPainter:
                 hovered = hover == idx
                 rh = cell_h - 3 * scale
                 ry = gy - 1.5 * scale
-                if hovered:
-                    cr.set_source_rgba(1, 1, 1, 0.10)
-                    rounded_rect(cr, gx - 3 * scale, ry, cw + 6 * scale, rh,
-                                 8 * scale)
-                    cr.fill()
                 badge = 17 * scale
-                base_c1 = gy + 15 * scale          # 标签与数值共用的基线
-                base_c2 = gy + 30 * scale          # 副值的基线（小一档、淡一档）
+                # 两行字在格子里**居中**：标题 + 数值一行、副值一行，两行墨迹中线
+                # 对称落在格子中线上（`notes` 关掉时只剩一行，那一行自己居中）。
+                line_gap = L["cell_line_gap"]
+                mid1 = gy + cell_h / 2 - (line_gap / 2 if L["notes"] else 0.0)
+                mid2 = gy + cell_h / 2 + (line_gap / 2 if L["notes"] else 0.0)
+                base_c1 = ink_baseline(mid1, row.label, self.F_LABEL * ts)
+                base_c2 = ink_baseline(mid2, row.note or row.label, self.F_NOTE * ts)
                 bcx = gx + badge / 2
-                bcy = base_c1 - 5 * scale          # 图标对齐"这一行的视觉中心"
-                cr.set_source_rgba(1, 1, 1, 0.13 if hovered else 0.06)
+                bcy = mid1                         # 图标对齐"这一行的视觉中心"
+                cr.set_source_rgba(1, 1, 1, 0.11 if hovered else 0.06)
                 rounded_rect(cr, bcx - badge / 2, bcy - badge / 2, badge, badge,
                              badge * 0.34)
                 cr.fill()
                 draw_icon(cr, row.icon, bcx, bcy, badge * 0.68, icon_tint(row.icon),
-                          0.95, phase=scene.moon_phase)
+                          1.0 if hovered else 0.95, phase=scene.moon_phase)
                 tx = gx + badge + 7 * scale
                 # 这一格的字号分三档：标题 11 / 数值 14 / 副值 9.5 —— 副值**明显**
                 # 小一号（用户点名："仰角"不该和"太阳"一样大）。
                 draw_text_bl(cr, row.label, tx, base_c1, self.F_LABEL * ts,
-                             (198, 207, 226), 0.55)
+                             (228, 235, 249) if hovered else (198, 207, 226),
+                             0.80 if hovered else 0.55)
                 arrow = 12 * scale if self.ui.info_buttons else 0.0
                 vw, _ = draw_text(cr, row.value, 0, -1000, self.F_VALUE * ts,
                                   (255, 255, 255), 0.0)
@@ -2851,7 +3026,8 @@ class SkyPainter:
                 if vx + vw > gx + cw - arrow:
                     vx = max(tx + 20 * scale, gx + cw - vw - arrow)
                 draw_text_bl(cr, row.value, vx, base_c1, self.F_VALUE * ts,
-                             (246, 249, 255), 0.95)
+                             (255, 255, 255) if hovered else (246, 249, 255),
+                             1.0 if hovered else 0.95)
                 if row.note and L["notes"]:
                     # 副值在自己的第二行上，只要不超出这一格就画；装不下就整条
                     # 不写，也不截半句（1.1.13 第一版这里和数值叠在一起过）。
@@ -2859,25 +3035,23 @@ class SkyPainter:
                                       (255, 255, 255), 0.0)
                     if tx + nw <= gx + cw - 3 * scale:
                         draw_text_bl(cr, row.note, tx, base_c2,
-                                     self.F_NOTE * ts, (196, 207, 228), 0.50)
+                                     self.F_NOTE * ts,
+                                     (226, 234, 248) if hovered else (196, 207, 228),
+                                     0.74 if hovered else 0.50)
                 if self.ui.info_buttons:
                     # 箭头**紧跟在数值后面**（不是钉在格子右边）：它是"这一条能点"
                     # 的意思，放在数值边上比放在格子尽头更容易看懂。
                     ax = min(vx + vw + 5 * scale, gx + cw - 8 * scale)
-                    draw_icon(cr, "chevron-right", ax, base_c1 - 4 * scale,
-                              11 * scale, (236, 241, 252), 0.30)
+                    draw_icon(cr, "chevron-right", ax,
+                              icon_ink_y("chevron-right", mid1, 11 * scale),
+                              11 * scale, (236, 241, 252),
+                              0.48 if hovered else 0.30)
                     rects.append((gx - 3 * scale, ry, cw + 6 * scale, rh,
                                   row.action, row.when))
-            if grid_lines > 1:                # 两行之间那一条横线
-                my = cy + cell_h - 4 * scale
-                cr.set_source_rgba(1, 1, 1, 0.06)
-                cr.rectangle(cx, my, card_w - pad * 2, 1)
-                cr.fill()
-            cy += grid_h
 
         # ---- 小字条：体感 / 湿度 / 风 / 能见度…（第三层，最小最淡）----
         if not compact and chip_rows:
-            cy += 6 * scale
+            cy = y + ymap["chips"]
             for line in chip_rows:
                 xoff = cx
                 for label, value, w in line:
@@ -2896,8 +3070,9 @@ class SkyPainter:
                                      1.0 * scale)
                         cr.fill()
                     # 小字条里的"名称"比"数值"小半档：一眼扫过去先看见数字
-                    # 文字在胶囊里**垂直居中**：按"半高 + 大写字高的一半"算基线
-                    base_chip = cy + pill_h * 0.5 + self.F_CHIP_VAL * ts * 0.36
+                    # 文字在胶囊里按**墨迹中线**居中（见 text_ink）
+                    base_chip = ink_baseline(cy + pill_h * 0.5, value,
+                                             self.F_CHIP_VAL * ts)
                     lw, _ = draw_text_bl(cr, label, xoff + 7 * scale, base_chip,
                                          self.F_CHIP_KEY * ts,
                                          (214, 223, 240) if hovered else (196, 206, 226),
@@ -2910,28 +3085,32 @@ class SkyPainter:
                         rects.append((xoff, cy, pill_w, pill_h, "detail", None))
                     xoff += pill_w + chip_gap
                 cy += chip_line_h + chip_gap
-            cy -= chip_gap - 2 * scale
 
         # ---- 一句人话 ----
-        cy += 4 * scale
-        bar_h = max(16 * scale, 19 * scale * len(hint_lines) - 5 * scale)
-        cr.set_source_rgba(accent[0] / 255, accent[1] / 255, accent[2] / 255, 0.85)
-        rounded_rect(cr, cx, cy + 1.5 * scale, 2.5 * scale, bar_h, 1.2 * scale)
-        cr.fill()
-        for i, line in enumerate(hint_lines):
-            draw_text_bl(cr, line, cx + 10 * scale, cy + (14 + i * 20) * scale,
-                         self.F_HINT * ts, (250, 250, 255), 0.84)
-        cy += hint_h
+        if hint_lines:
+            cy = y + ymap["hint"] + hint_top
+            bar_h = max(14 * scale, hint_line_h * len(hint_lines) - 6 * scale)
+            cr.set_source_rgba(accent[0] / 255, accent[1] / 255, accent[2] / 255,
+                               0.85)
+            rounded_rect(cr, cx, cy + 3 * scale, 2.5 * scale, bar_h, 1.2 * scale)
+            cr.fill()
+            for i, line in enumerate(hint_lines):
+                draw_text_bl(cr, line, cx + 10 * scale,
+                             ink_baseline(cy + 11 * scale + i * hint_line_h, line,
+                                          self.F_HINT * ts),
+                             self.F_HINT * ts, (250, 250, 255), 0.84)
 
         # ---- 脚注：数据从哪来、什么时候问回来的 + 立刻刷新一次 ----
         # 一行里要塞下"来源 + 更新于几点"，窗口窄的时候先让短的顶上来：
         # 与其把字挤到刷新按钮底下（或截半句），不如少说几个字。
         # 壁纸上的那张卡没有刷新按钮，右下角整块都是给这行字的。
+        cy = y + ymap["foot"] + foot_h / 2.0      # 这一条的中线：字与按钮都对齐它
         rb = 20 * scale if self.ui.info_buttons else 0.0
-        rbx, rby = x + card_w - pad - rb, cy - 5 * scale
+        rbx, rby = x + card_w - pad - rb, cy - rb / 2
         draw_text_room = (x + card_w - pad - rb - (10 * scale if rb else 0.0)) - cx
         foot = self._foot_text(scene, cr, draw_text_room, self.F_FOOT * ts)
-        draw_text_bl(cr, foot, cx, cy + 13 * scale, self.F_FOOT * ts,
+        draw_text_bl(cr, foot, cx,
+                     ink_baseline(cy, foot, self.F_FOOT * ts), self.F_FOOT * ts,
                      (198, 208, 228), 0.42)
         if self.ui.info_buttons:
             self._icon_button(cr, "refresh", rbx + rb / 2, rby + rb / 2, rb,

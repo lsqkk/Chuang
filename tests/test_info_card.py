@@ -274,20 +274,30 @@ class TestInfoCardDrawing(unittest.TestCase):
                                 "字号下限太低——小窗口里会缩到看不清")
 
     def test_small_text_beside_a_big_number_is_optically_centred(self):
-        """大字号旁边的小字：**按字面中线**对齐，不是共用基线。
+        """大字号旁边的小字：**按墨迹中线**对齐（不是文本框、也不是那两个经验值）。
 
         共用基线时，27 磅温度的下缘压着 14 磅的"毛毛雨"，温度的字面中心会高出
-        小半行——用户对着截图说的"温度飘到顶上去了"就是这件事。而字号差不多时
-        共用基线才是对的（表格里的标题与数值），所以这条规则要有那个 1.6 倍门槛。
+        小半行——用户说的"温度飘到顶上去了"就是这件事。1.1.14 改用两个经验值
+        （大字中线 = 基线 − 0.36×字号、小字 − 0.38×字号）对齐，量了真实墨迹才
+        发现还差着 3~4 像素（用户第二次说的"没有上下居中"）。现在一律量墨迹
+        （`text_ink` / `ink_baseline`）：字号差得大时让两行的墨迹中线重合；
+        字号差不多时共用基线（指标格的"太阳 / 南 173°"）——两者本来就差不到
+        1.5 像素，所以表格不会被拆成两条基线。
         """
-        from chuang.render import optical_shift
-        base, big, small = 100.0, 27.0, 14.0
-        shifted = optical_shift(base, big, small)
-        self.assertNotEqual(shifted, base, "字号差一倍还共用基线，小字会掉下去")
-        self.assertAlmostEqual(shifted - 0.38 * small, base - 0.36 * big, places=6)
-        # 字号接近时不动（指标格里的"太阳 / 南 173°"就该共用基线）
-        self.assertEqual(optical_shift(base, 11.5, 10.5), base)
-        self.assertEqual(optical_shift(base, 14.5, 11.5), base)
+        from chuang.render import ink_baseline, text_ink
+        center, ts = 200.0, 1.2
+        T, C = 27.0 * ts, 14.0 * ts
+        for text, size in (("19°", T), ("毛毛雨", C)):
+            top, bottom = text_ink(text, size)
+            self.assertAlmostEqual(
+                ink_baseline(center, text, size) + (top + bottom) / 2.0, center,
+                delta=0.5, msg=f"{text} 的墨迹中线没有落在中线上")
+        # 字号接近（11.5 / 14.5）时共用一条基线，墨迹中线也差不到 1.5 像素
+        base = ink_baseline(center, "太阳", 11.5 * ts)
+        for text, size in (("太阳", 11.5 * ts), ("西 269°", 14.5 * ts)):
+            top, bottom = text_ink(text, size)
+            self.assertLess(abs(base + (top + bottom) / 2.0 - center), 1.5,
+                            f"{text} 跟同行的标题共用基线时差得太多")
 
     def test_the_card_always_fits_the_window(self):
         """卡片不许比窗口还高，命中方块也不许跑出画布。
@@ -310,6 +320,70 @@ class TestInfoCardDrawing(unittest.TestCase):
                 self.assertGreaterEqual(y, 0, f"{w}×{h} 的 {kind} 跑到上边外面了")
                 self.assertLessEqual(x + rw, w, f"{w}×{h} 的 {kind} 跑到右边外面了")
                 self.assertLessEqual(y + rh, h, f"{w}×{h} 的 {kind} 跑到下边外面了")
+
+    def test_the_temperature_and_its_icon_sit_on_the_block_middle(self):
+        """主角块里"天气图标 + 大字温度"要落在**块的中线**上（用户点名的一条）。
+
+        量的是画出来的像素：先画一帧，再在主块那一段里分别找左边那枚图标与温度
+        那行数字的着墨范围——两者的墨迹中线都该贴在块的中线上（1.5 像素以内）。
+        1.1.14 那版是"左列跟右列的第一行对齐"，左边只有一行、右边有两行，于是
+        温度永远偏在块的上半部，用户两次说的都是这件事。
+        """
+        w, h = 1200, 760
+        scene = self._draw(weather=_weather(), w=w, h=h)
+        L = self.painter._info_layout(w, h, scene)
+        surf = self.painter._info.surf
+        self.assertIsNotNone(surf)
+        buf = bytes(surf.get_data())
+        stride = surf.get_stride()
+        scale, pad, ts = L["scale"], L["pad"], L["tscale"]
+        edge = 8 * scale                     # 离屏图比卡片大出来的那一圈（阴影）
+        top = int(L["y"]["hero"] + edge)
+        bottom = int(top + L["hero_block"])
+        mid = (top + bottom) / 2.0
+        badge = 26 * scale
+        zones = (("图标", pad, pad + badge, 120),
+                 ("温度", pad + badge + 9 * scale, pad + badge + 9 * scale + 2.6 * 27 * ts,
+                  150))
+        for name, x0, x1, thr in zones:
+            rows = []
+            for y in range(max(0, top), min(surf.get_height(), bottom)):
+                for x in range(int(x0 + edge), int(x1 + edge)):
+                    off = y * stride + x * 4
+                    if max(buf[off], buf[off + 1], buf[off + 2]) > thr:
+                        rows.append(y)
+                        break
+            self.assertTrue(rows, f"主块里没找到{name}的墨迹")
+            centre = (rows[0] + rows[-1]) / 2.0
+            self.assertLess(abs(centre - mid), 1.5,
+                            f"{name}没落在主角块的中线上：墨迹中线 {centre:.1f}，"
+                            f"块的中线 {mid:.1f}")
+
+    def test_the_vertical_bands_add_up(self):
+        """卡片高度 = 各条高度之和；`_paint_info` 就照这一份 y 下笔。
+
+        以前"计划的高度"（`total()`）与"画出来的内容"（一段段 `cy +=`）是两处
+        各算一遍：卡片底下时而多一截空白、时而挤掉半行，谁也不容易发现。
+        现在两边共用 `L["y"]`，这条守住它。
+        """
+        for w, h in ((420, 300), (700, 520), (1200, 760), (1920, 1080)):
+            painter = SkyPainter(seed=3)
+            scene = self.engine.build(DAY, _weather(), location_label="西安")
+            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+            painter.draw(cairo.Context(surf), w, h, scene, 180.0)
+            L = painter._info_layout(w, h, scene)
+            ymap, pad = L["y"], L["pad"]
+            names = [k for k in ("head", "time", "arc", "hero", "divider", "grid",
+                                 "chips", "hint", "foot") if k in ymap]
+            self.assertEqual(names[0], "head")
+            self.assertEqual(names[-1], "foot", "脚注该是最后一条")
+            self.assertAlmostEqual(ymap["head"], 0.75 * pad, delta=1e-6,
+                                   msg=f"{w}×{h} 头顶那条留白变了")
+            for a, b in zip(names, names[1:]):
+                self.assertLess(ymap[a], ymap[b], f"{w}×{h} 里 {a} 跑到 {b} 下面了")
+            self.assertAlmostEqual(ymap["foot"] + L["foot_h"], L["card_h"],
+                                   delta=1e-6,
+                                   msg=f"{w}×{h} 的卡片高度与最后一条对不上")
 
     def test_polar_day_has_no_arc(self):
         """极昼没有日出日落——那时候不许画一条假的日弧出来。"""
