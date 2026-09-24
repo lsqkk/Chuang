@@ -180,6 +180,66 @@ class TestInfoCardDrawing(unittest.TestCase):
         self.assertNotIn("open", kinds)
         self.assertIn("toggle", kinds)          # 还得能展开回去
 
+    def test_the_card_has_three_tiers(self):
+        """这张卡分三层：主角（此刻的天气）/ 指标格（日月）/ 小字条。
+
+        1.1.13 之前是一模一样的一长溜，谁也看不出哪个重要。这里钉住：
+        主角那一块在（点了摊开数据）、指标格 ≥3 个（点了跳过去）、
+        小字条也画出来了（体感、湿度、风…）。
+        """
+        self._draw(weather=_weather())
+        rects = self.painter.ui.info_rects
+        kinds = [r[4] for r in rects]
+        self.assertGreaterEqual(kinds.count("open"), 3)
+        self.assertGreaterEqual(kinds.count("detail"), 2)
+        now = datetime.now(TZ).replace(second=0, microsecond=0)
+        chips = self.painter._info_chips(
+            self.engine.build(now, _weather_from(now.replace(hour=0)),
+                              location_label="西安"))
+        labels = [name for name, _value in chips]
+        self.assertIn("湿度", labels)
+        self.assertIn("风", labels)
+        # 小字条是排在主角与指标格**之后**的那些方块（顺序也是版式的一部分）
+        self.assertEqual(kinds[0], "toggle")        # 抬头：收起箭头
+        self.assertEqual(kinds[1], "arc")           # 日弧
+        self.assertEqual(kinds[2], "detail")        # 主角
+        self.assertEqual(kinds[3:7], ["open"] * 4)  # 太阳 / 日出 / 日落 / 月亮
+
+    def test_the_little_chips_carry_the_new_readings(self):
+        """接口给的那几样（紫外线 / 气压 / 露点 / 今日高低温）要上卡。"""
+        now = datetime.now(TZ).replace(hour=12, minute=0, second=0, microsecond=0)
+        w = _weather_from(now.replace(hour=0))
+        w.dew = 12.0
+        w.pressure = 1012.0
+        w.daily[now.strftime("%Y-%m-%d")] = (24.0, 12.0)
+        sc = self.engine.build(now, w, location_label="西安 · 陕西省")
+        self.assertTrue(sc.weather_now)
+        chips = dict(self.painter._info_chips(sc))
+        self.assertIn("露点", chips)
+        self.assertIn("气压", chips)
+        # 逐小时表里带上了紫外线（老数据里没有那一列）
+        w.hourly[12].uv = 6.0
+        w.invalidate()
+        sc2 = self.engine.build(now, w, location_label="西安 · 陕西省")
+        self.assertIn("紫外线", dict(self.painter._info_chips(sc2)))
+        # 主角那一行底下写着今天的最高最低
+        self.assertIn("今日", self.painter._hero_sub(sc2))
+
+    def test_the_cache_key_notices_the_new_readings(self):
+        """紫外线 / 气压 / 露点变了，卡片也得重画（不然会停在上一份读数上）。"""
+        base = datetime.now(TZ).replace(hour=12, minute=0, second=0, microsecond=0)
+        w1 = _weather_from(base.replace(hour=0))
+        w2 = _weather_from(base.replace(hour=0))
+        w1.pressure, w2.pressure = 1001.0, 1019.0
+        self.assertNotEqual(self._card_pixels(when=base, weather=w1),
+                            self._card_pixels(when=base, weather=w2),
+                            "气压变了，卡片还停在旧的那一行上")
+        w3 = _weather_from(base.replace(hour=0))
+        w3.dew = 3.0
+        self.assertNotEqual(self._card_pixels(when=base, weather=w2),
+                            self._card_pixels(when=base, weather=w3),
+                            "露点变了，卡片还停在旧的那一行上")
+
     def test_polar_day_has_no_arc(self):
         """极昼没有日出日落——那时候不许画一条假的日弧出来。"""
         eng = SkyEngine()

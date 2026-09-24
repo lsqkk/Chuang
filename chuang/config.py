@@ -42,6 +42,22 @@ DEFAULT_FRAME_RATE = 60
 #   full = 永远完整版（壁纸大、站远看，很多人更喜欢完整的）。
 INFO_MODES = ("follow", "slim", "full")
 
+# 窗外"画什么"的开关（菜单 → 场景）。每一项都能单独关掉，也能一键回到全部。
+# 名字和渲染里的字段一一对应（render.UIState），改名字要两边一起改。
+SCENE_SWITCHES = (
+    ("show_people", "行人"),
+    ("show_traffic", "车辆"),
+    ("show_trees", "行道树"),
+    ("show_lamps", "路灯"),
+    ("show_planes", "天上的飞机"),
+    ("show_skyline", "城市天际线"),
+    ("show_clouds", "云"),
+    ("show_stars", "星空"),
+    ("show_weatherfx", "雨雪与闪电"),
+    ("show_plant", "窗台盆栽"),
+    ("plant_sway", "盆栽随风摇曳"),
+)
+
 
 @dataclass
 class Location:
@@ -95,6 +111,19 @@ class Config:
     info_compact: bool = False           # 信息卡精简模式（只留时间与那句话）
     show_ribbon: bool = True
     frame_rate: int = DEFAULT_FRAME_RATE  # 画面刷新率（帧/秒），见 FRAME_RATES
+    # 窗外画什么（菜单 → 场景）。默认全开＝和以前一模一样；
+    # 想只看天、或者嫌街上太热闹，就在这里关。
+    show_people: bool = True
+    show_traffic: bool = True
+    show_trees: bool = True
+    show_lamps: bool = True
+    show_planes: bool = True
+    show_skyline: bool = True
+    show_clouds: bool = True
+    show_stars: bool = True
+    show_weatherfx: bool = True          # 雨雪粒子与闪电
+    show_plant: bool = True
+    plant_sway: bool = True              # 盆栽随风摇曳（风大才看得出来）
     first_run_done: bool = False
 
     # ---- 读写 --------------------------------------------------------
@@ -159,6 +188,9 @@ class Config:
                      "autostart", "autostart_hidden", "update_check",
                      "always_on_top", "show_ribbon", "wallpaper_show_info",
                      "wallpaper_show_ribbon", "show_info", "info_compact",
+                     "show_people", "show_traffic", "show_trees", "show_lamps",
+                     "show_planes", "show_skyline", "show_clouds", "show_stars",
+                     "show_weatherfx", "show_plant", "plant_sway",
                      "first_run_done"):
             setattr(self, name, bool(getattr(self, name, False)))
         try:

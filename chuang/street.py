@@ -287,16 +287,28 @@ def _on_road(a: Actor, t: float, density: float) -> bool:
 
 
 def draw(cr, w: float, h: float, scene, actors: list[Actor], t: float,
-         light, base_col, lamps=(), trees=()) -> None:
-    """把人和车画在地面带上（在剪影之上、窗台之下）。"""
-    if not actors:
+         light, base_col, lamps=(), trees=(), people: bool = True,
+         traffic: bool = True, trees_on: bool = True, lamps_on: bool = True) -> None:
+    """把人和车画在地面带上（在剪影之上、窗台之下）。
+
+    `people` / `traffic` / `trees_on` / `lamps_on` 是菜单 → 场景里的那几开关：
+    关掉行人就只剩车，关掉行道树就只剩路灯……各自独立，画面的其余部分不受影响。
+    （骑车的人算在"行人"里，机动车算在"车辆"里。）
+    """
+    if trees_on:
+        _trees(cr, w, h, scene, light, trees, t)
+    if lamps_on:
+        _lamps(cr, w, h, scene, light, lamps)
+    if not actors or not (people or traffic):
         return
-    _trees(cr, w, h, scene, light, trees, t)
-    _lamps(cr, w, h, scene, light, lamps)
     rain = (scene.has_weather and scene.precip_kind == "rain"
             and scene.precip_strength > 0.15)
     dens = activity(scene.when, scene)
     for a in sorted(actors, key=lambda a: a.depth):
+        if a.kind in ("ped", "cyclist") and not people:
+            continue                      # 关掉行人时，骑车的也一起关
+        if a.kind in ("car", "bus") and not traffic:
+            continue
         vis = _visibility(a, scene)
         if vis <= 0.03:
             continue
@@ -320,11 +332,18 @@ def draw(cr, w: float, h: float, scene, actors: list[Actor], t: float,
 # --------------------------------------------------------------------------
 
 def _shadow_geom(light, height_px: float):
-    """(横向偏移, 长短系数)：太阳越偏、越低，影子越长越斜。"""
-    sun_hx = math.sin(math.radians(light.rel_az))
-    alt = max(light.sun_alt, 1.5)
-    length = clamp(1.0 / math.tan(math.radians(alt)), 0.0, 8.0)
-    return (-sun_hx * length * height_px * 0.40,
+    """(横向偏移, 纵向偏移, 长短系数)：太阳越偏、越低，影子越长越斜。
+
+    纵向这一项以前**根本没有**——人和车的影子只会横向斜一条，于是"光从哪儿
+    来"在画面里读不出来。地面在画面上是一条极窄的带子（横向几十像素一米，
+    往观察者这一侧被透视压得很扁），所以纵向分量要收着画，但它必须在：
+    太阳在窗外正对面的时候，影子是朝窗里（屏幕下方）铺过来的。
+    """
+    rel = math.radians(light.rel_az)
+    alt = max(light.sun_alt, 2.0)
+    length = clamp(1.0 / math.tan(math.radians(alt)), 0.0, 6.0)
+    return (-math.sin(rel) * length * height_px * 0.34,
+            math.cos(rel) * length * height_px * 0.17,
             clamp(length / 2.6, 0.35, 1.0))
 
 
@@ -350,17 +369,19 @@ def _cast_shadow(cr, x, y, light, height, width, strength=1.0) -> None:
     """人/车拖在地上的长影：往背光侧斜过去的一条。"""
     if light.direct <= 0.02:
         return
-    dx, k = _shadow_geom(light, height)
+    dx, dy, k = _shadow_geom(light, height)
     a = 0.44 * light.direct * strength
     reach = width * 0.5 + abs(dx)
-    cx, cy = x + dx * 0.40, y - height * 0.05
+    cx, cy = x + dx * 0.42, y + dy * 0.55 - height * 0.04
     g = cairo.RadialGradient(cx, cy, 0, cx, cy, max(2.0, reach))
     g.add_color_stop_rgba(0, 0.02, 0.02, 0.03, a)
     g.add_color_stop_rgba(0.55, 0.02, 0.02, 0.03, a * 0.55)
     g.add_color_stop_rgba(1, 0.02, 0.02, 0.03, 0)
     cr.save()
     cr.translate(cx, cy)
-    cr.scale(1.0, max(0.16, min(0.7, (height * 0.12 * k) / max(2.0, reach))))
+    # 纵向半径：影子朝观察者这一侧铺得越远，看着越"厚"
+    ry = (height * 0.12 * k + abs(dy) * 0.55) / max(2.0, reach)
+    cr.scale(1.0, max(0.16, min(0.8, ry)))
     cr.translate(-cx, -cy)
     cr.set_source(g)
     cr.arc(cx, cy, max(2.0, reach), 0, TAU)
@@ -382,9 +403,30 @@ def trees(seed: int) -> list[tuple[float, float, int]]:
     out: list[tuple[float, float, int]] = []
     x = rnd.uniform(0.03, 0.10)
     while x < 0.98:
-        out.append((round(x, 4), rnd.uniform(0.82, 1.12), rnd.randrange(1000)))
+        out.append((round(x, 4), rnd.uniform(0.82, 1.12), rnd.randrange(100000)))
         x += rnd.uniform(0.11, 0.26)
     return out
+
+
+def _season_tint(scene, green):
+    """秋天叶子会黄一点——按日期（南北半球分开）往琥珀色偏。
+
+    只偏一点点：这是行道树、不是调色板，天色该压过季节才是主角。
+    常绿的塔形树（种子里那一类）不受影响，见 _trees 里的用法。
+    """
+    try:
+        day = scene.when.timetuple().tm_yday
+    except Exception:                      # 调试用的假场景
+        return green
+    south = getattr(scene, "lat", 0.0) < 0
+    if south:
+        day = (day + 182) % 365
+    # 9 月下旬到 11 月最黄，其余时候几乎不偏
+    if 255 <= day <= 330:
+        k = 1.0 - abs((day - 292) / 38.0)
+        k = clamp(k, 0.0, 1.0) ** 1.2 * 0.42
+        return mix_rgb(green, (0.62, 0.45, 0.13), k)
+    return green
 
 
 def _trees(cr, w, h, scene, light, trees, t) -> None:
@@ -400,39 +442,80 @@ def _trees(cr, w, h, scene, light, trees, t) -> None:
                           tuple(c / 255 for c in light.glow), 0.12)
     green = mix_rgb(night_green, day_green, clamp((light.sun_alt + 3.0) / 14.0, 0, 1))
     green = shade(green, 0.55 + 0.45 * amb)
+    green = _season_tint(scene, green)
     sun_side = light.sun_side
     for fx, size, seed in trees:
+        rnd = random.Random(seed)
         x = fx * w
         sway = math.sin(t * 0.55 + seed * 0.017) * wind * 1.6 * scale
         th = 40.0 * scale * size          # 整棵树的高度
         trunk_w = max(1.0, th * 0.10)
+        kind = seed % 3                   # 0 圆头 / 1 塔形（常绿）/ 2 伞形
+        leaf = green
+        if kind == 1:                     # 常绿：压暗一点、偏青
+            leaf = shade(mix_rgb(green, (0.10, 0.22, 0.16), 0.55), 0.92)
         cr.save()
         # 影子：和人和车用同一束光（太阳低就长、阴天就没有）
         _ground_shadow(cr, x + sway * 0.4, base_y + th * 0.02,
                        th * 0.34, th * 0.10, light, 0.7)
         _cast_shadow(cr, x, base_y, light, th * 0.9, th * 0.5, 0.5)
-        # 树干
+
+        # 树池：树脚下那一小块深色（行道树长在硬地里，这一点很出气质）
+        cr.set_source_rgba(0.05, 0.06, 0.05, 0.24 + 0.16 * amb)
+        cr.save()
+        cr.translate(x, base_y + th * 0.012)
+        cr.scale(th * 0.20, max(1.0, th * 0.045))
+        cr.arc(0, 0, 1.0, 0, TAU)
+        cr.fill()
+        cr.restore()
+
+        # 树干：下粗上细，再分出两三条枝（枝条伸进树冠里，树才不是"插"上去的）
         trunk = shade(mix_rgb((0.22, 0.18, 0.15), green, 0.25),
                       0.55 + 0.55 * amb)
         cr.set_source_rgba(trunk[0], trunk[1], trunk[2], 0.96)
         cr.new_path()
         cr.move_to(x - trunk_w / 2, base_y)
-        cr.line_to(x - trunk_w * 0.28 + sway * 0.5, base_y - th * 0.62)
-        cr.line_to(x + trunk_w * 0.28 + sway * 0.5, base_y - th * 0.62)
+        cr.line_to(x - trunk_w * 0.30 + sway * 0.45, base_y - th * 0.52)
+        cr.line_to(x + trunk_w * 0.30 + sway * 0.45, base_y - th * 0.52)
         cr.line_to(x + trunk_w / 2, base_y)
         cr.close_path()
         cr.fill()
-        # 树冠：几团叠出来的圆脑袋（先暗后亮，太阳那一侧更亮）
+        fork = base_y - th * 0.52 + sway * 0.45
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_source_rgba(*[min(1.0, c * 0.92) for c in trunk], 0.95)
+        for bdx, blen in ((-0.30, 0.30), (0.26, 0.34), (0.02, 0.42)):
+            cr.set_line_width(max(0.8, trunk_w * (0.62 if bdx else 0.74)))
+            cr.move_to(x + bdx * trunk_w * 0.5, fork)
+            cr.line_to(x + bdx * th * blen + sway * 0.8,
+                       fork - th * (0.16 + blen * 0.5))
+            cr.stroke()
+
+        # 树冠
         cx = x + sway
-        cy = base_y - th * 0.70
-        rw = th * 0.46
-        rh = th * 0.34
-        back = shade(green, 0.74)
-        front = shade(green, 1.12)
-        blobs = ((-0.46, -0.04, 0.56), (0.44, -0.02, 0.54), (0.02, -0.44, 0.60),
-                 (-0.24, 0.26, 0.58), (0.26, 0.22, 0.56), (0.0, 0.02, 0.82))
+        cy = base_y - th * (0.68 if kind != 1 else 0.62)
+        rw = th * (0.46 if kind != 2 else 0.52)
+        rh = th * (0.34 if kind == 0 else 0.30 if kind == 1 else 0.26)
+        back = shade(leaf, 0.74)
+        front = shade(leaf, 1.12)
+        if kind == 1:                       # 塔形：往上收
+            blobs = ((-0.20, 0.30, 0.44), (0.22, 0.28, 0.42), (0.0, 0.02, 0.58),
+                     (-0.13, -0.30, 0.40), (0.14, -0.32, 0.38), (0.0, -0.60, 0.30))
+        elif kind == 2:                     # 伞形：压扁、往两边摊开
+            blobs = ((-0.62, 0.06, 0.40), (0.60, 0.08, 0.38), (-0.30, -0.10, 0.50),
+                     (0.32, -0.08, 0.48), (0.0, -0.34, 0.52), (0.0, -0.02, 0.78))
+        else:                               # 圆头
+            blobs = ((-0.48, -0.02, 0.54), (0.46, -0.04, 0.52), (0.02, -0.46, 0.58),
+                     (-0.26, 0.26, 0.56), (0.28, 0.22, 0.54), (0.0, 0.0, 0.80))
+        # 每一团上再叠几片"叶群"：光一个圆脑袋太像贴纸
+        clumps = []
+        for i in range(9):
+            a = rnd.uniform(0, TAU)
+            rr = rnd.uniform(0.25, 0.92)
+            clumps.append((math.cos(a) * rr, math.sin(a) * rr * 0.72,
+                           rnd.uniform(0.16, 0.30),
+                           rnd.choice((-1, 1))))
         # 树冠下缘压暗一点，圆脑袋才有体积
-        shade_under = shade(green, 0.62)
+        shade_under = shade(leaf, 0.62)
         for bx, by, br in blobs:
             r = rw * br
             if by > 0.24:
@@ -446,6 +529,16 @@ def _trees(cr, w, h, scene, light, trees, t) -> None:
             cr.translate(cx + bx * rw, cy + by * rh)
             cr.scale(1.0, max(0.55, rh / rw))
             cr.arc(0, 0, r, 0, TAU)
+            cr.fill()
+            cr.restore()
+        for bx, by, br, side in clumps:
+            col = front if bx * side >= 0 else back
+            col = shade(col, 1.06 if side > 0 else 0.88)
+            cr.set_source_rgba(col[0], col[1], col[2], 0.55)
+            cr.save()
+            cr.translate(cx + bx * rw, cy + by * rh)
+            cr.scale(1.0, max(0.55, rh / rw))
+            cr.arc(0, 0, rw * br, 0, TAU)
             cr.fill()
             cr.restore()
         # 树冠底部：一条暗（树荫的味道）

@@ -392,5 +392,118 @@ class TestFetchRequest(unittest.TestCase):
             self.assertNotIn("forecast_days", seen["url"])
 
 
+class TestExtraReadings(unittest.TestCase):
+    """接口里给了、我们以前没用的那几样：露点、气压、紫外线、云的层次、日高低温。
+
+    1.1.13 起它们会出现在信息卡上（小字条）与主角那一行里，所以：
+    请求里要带上、解析时不能丢、缓存来回一趟还在、老缓存没有它们也不能报错。
+    """
+
+    RAW = {
+        "current": {
+            "temperature_2m": 21.5, "relative_humidity_2m": 46,
+            "apparent_temperature": 22.0, "weather_code": 1, "cloud_cover": 30,
+            "wind_speed_10m": 7.2, "wind_direction_10m": 210,
+            "wind_gusts_10m": 14.0, "precipitation": 0.0,
+            "dew_point_2m": 8.4, "pressure_msl": 1012.3,
+            "cloud_cover_low": 10, "cloud_cover_mid": 20, "cloud_cover_high": 60,
+        },
+        "hourly": {
+            "time": ["2026-09-24T11:00", "2026-09-24T12:00"],
+            "temperature_2m": [21.0, 22.0],
+            "weather_code": [1, 2],
+            "cloud_cover": [25, 35],
+            "precipitation_probability": [0, 5],
+            "precipitation": [0.0, 0.0],
+            "visibility": [24000.0, 22000.0],
+            "dew_point_2m": [8.0, 8.6],
+            "pressure_msl": [1012.0, 1012.6],
+            "uv_index": [5.4, 6.1],
+            "cloud_cover_low": [8, 12],
+            "cloud_cover_mid": [18, 22],
+            "cloud_cover_high": [55, 65],
+        },
+        "daily": {"time": ["2026-09-24"],
+                  "temperature_2m_max": [24.0], "temperature_2m_min": [12.0]},
+    }
+
+    def _fetch(self):
+        with mock.patch.object(W, "_fetch_json", return_value=self.RAW):
+            return W.fetch(34.34, 108.94, "Asia/Shanghai")
+
+    def test_the_request_asks_for_them(self):
+        seen = {}
+
+        def fake(url, timeout=9.0):
+            seen["url"] = url
+            return self.RAW
+
+        with mock.patch.object(W, "_fetch_json", side_effect=fake):
+            W.fetch(34.34, 108.94, "Asia/Shanghai")
+        for field in ("dew_point_2m", "pressure_msl", "uv_index",
+                      "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            self.assertIn(field, seen["url"], f"请求里没要 {field}")
+        self.assertIn("temperature_2m_max", seen["url"])
+        # 日出日落**不要**：那是本地天文算的，不能拿接口的顶掉（见 DESIGN）
+        self.assertNotIn("sunrise", seen["url"])
+
+    def test_parsed_into_the_object(self):
+        w = self._fetch()
+        self.assertAlmostEqual(w.dew, 8.4)
+        self.assertAlmostEqual(w.pressure, 1012.3)
+        self.assertAlmostEqual(w.cloud_high, 60.0)
+        self.assertEqual(w.day_extremes(date(2026, 9, 24)), (24.0, 12.0))
+        when = datetime(2026, 9, 24, 11, 0)
+        self.assertAlmostEqual(w.hourly_at(when, "uv"), 5.4)
+        self.assertAlmostEqual(w.hourly_at(when, "cloud_low"), 8.0)
+
+    def test_missing_columns_come_back_as_none(self):
+        """老缓存 / 别的城市那份数据里没有这些列：要 None，别编一个 0 出来。"""
+        w = self._fetch()
+        self.assertIsNone(w.hourly_at(datetime(2026, 9, 24, 11, 0), "不存在的列"))
+        self.assertIsNone(W.Weather(ok=True).hourly_at(datetime(2026, 9, 24), "uv"))
+        self.assertIsNone(W.Weather(ok=True).day_extremes(date(2026, 9, 24)))
+
+    def test_extremes_fall_back_to_the_hourly_table(self):
+        """接口没给日预报（老缓存）时，按逐小时那张表算当天的最高最低。"""
+        w = W.Weather(ok=True, fetched_at=1e9)
+        base = datetime(2026, 9, 24, 0, 0)
+        for h in range(24):
+            w.hourly.append(W.HourPoint(base + timedelta(hours=h), 40.0, 1,
+                                        10.0 + h))
+        w.invalidate()
+        self.assertEqual(w.day_extremes(date(2026, 9, 24)), (33.0, 10.0))
+        # 有日预报时以接口的为准（逐小时是逐点采样，算出来的极值会差一点）
+        w.daily["2026-09-24"] = (35.0, 9.0)
+        self.assertEqual(w.day_extremes(date(2026, 9, 24)), (35.0, 9.0))
+
+    def test_cache_roundtrip_keeps_them(self):
+        w = self._fetch()
+        back = W._deserialize(W._serialize(w))
+        self.assertAlmostEqual(back.dew, 8.4)
+        self.assertAlmostEqual(back.pressure, 1012.3)
+        self.assertAlmostEqual(back.cloud_mid, 20.0)
+        self.assertEqual(back.day_extremes(date(2026, 9, 24)), (24.0, 12.0))
+        self.assertAlmostEqual(back.hourly_at(datetime(2026, 9, 24, 12, 0), "uv"),
+                               6.1)
+
+    def test_an_old_cache_without_them_still_loads(self):
+        """老缓存的行只有 5-7 列：读得进来，缺的那几样就是默认值。"""
+        old = {"fetched_at": 1e9, "code": 63, "cloud": 95.0, "temp": 18.0,
+               "hourly": [["2026-09-24T00:00:00", 95.0, 63, 18.0, 60.0]]}
+        w = W._deserialize(old)
+        self.assertEqual(len(w.hourly), 1)
+        self.assertIsNone(w.hourly[0].uv)
+        self.assertIsNone(w.dew)
+        self.assertEqual(w.daily, {})
+
+    def test_uv_text_says_a_level(self):
+        self.assertIn("弱", W.uv_text(1))
+        self.assertIn("中等", W.uv_text(4))
+        self.assertIn("很强", W.uv_text(9))
+        self.assertIn("极强", W.uv_text(12))
+        self.assertEqual(W.uv_text(None), "—")
+
+
 if __name__ == "__main__":
     unittest.main()

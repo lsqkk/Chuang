@@ -829,29 +829,47 @@ def _mutual_shadows(cr, w, h, shapes, base_y, light: Light) -> None:
 
 def ground_shadow(cr, w, h, layers: Layers, light: Light, ground_y: float,
                   ground_h: float) -> None:
-    """建筑落在地面上的影子：贴在楼根、朝背光侧拉长；太阳低就长、云厚就淡。"""
+    """建筑落在地面上的影子：从楼根朝观察者这一侧铺过来的一片。
+
+    以前每栋楼画的都是一个**通到马路对面的竖直矩形**（只有横向渐变）：一排楼
+    排下来，路面上就是一道一道等宽的明暗竖带——用户看到的就是这个。
+
+    现在按真正的投影画：
+
+    * 影子是一个**平行四边形**——楼根的宽度在远端朝背光侧斜出去（斜多少看太阳
+      偏了多少），所以影子是斜的，不再是一根根竖条；
+    * 铺多远按 `1/tan(太阳高度角)` **乘以那栋楼自己多高**算（高楼下影子长，
+      太阳低的时候整条马路都在影子里）；
+    * 越远越淡（远端是软边），根下最深。
+    """
     if light.direct <= 0.03 or not layers.near:
         return
-    alt = max(light.sun_alt, 0.8)
-    length = clamp(1.0 / math.tan(math.radians(alt)), 0.0, 9.0)
-    fade = clamp(length / 3.2, 0.15, 1.0)
+    alt = max(light.sun_alt, 1.0)
+    ratio = clamp(1.0 / math.tan(math.radians(alt)), 0.0, 9.0)
+    heights = sorted(max(1.0, b.h) for b in layers.near)
+    typical = heights[len(heights) // 2] or 1.0
+    kick = -math.sin(math.radians(light.rel_az))     # 影子往哪边斜（0 = 正对面）
     cr.save()
     cr.rectangle(0, ground_y, w, ground_h)
     cr.clip()
     for b in layers.near:
         bx = b.x * w
         bw = max(2.5, b.w * w)
-        bh = max(2.5, b.h * h)
-        d = 0.0 if light.sun_side == 0 else -light.sun_side * min(length, 7.0) * bh * 0.40
-        x0 = bx + min(0.0, d)
-        x1 = bx + bw + max(0.0, d)
-        span = max(2.0, x1 - x0)
-        g = _grad(x0, 0, x1, 0)
-        a = 0.46 * light.direct * fade
-        near_a, far_a = (a, a * 0.22) if light.sun_side >= 0 else (a * 0.22, a)
-        g.add_color_stop_rgba(0, 0.02, 0.03, 0.05, near_a)
-        g.add_color_stop_rgba(1, 0.02, 0.03, 0.05, far_a)
+        rel = clamp(b.h / typical, 0.55, 2.0)
+        reach = clamp(0.34 * ratio * rel, 0.12, 1.0)          # 铺到马路多深
+        depth = ground_h * reach
+        skew = clamp(kick * depth * 1.6, -0.7 * ground_h, 0.7 * ground_h)
+        a = 0.42 * light.direct * clamp(0.55 + 0.45 * reach, 0.4, 1.0)
+        g = _grad(0, ground_y, 0, ground_y + depth)
+        g.add_color_stop_rgba(0, 0.02, 0.03, 0.05, a)
+        g.add_color_stop_rgba(0.55, 0.02, 0.03, 0.05, a * 0.62)
+        g.add_color_stop_rgba(1, 0.02, 0.03, 0.05, a * 0.10)
         cr.set_source(g)
-        cr.rectangle(x0, ground_y, span, ground_h)
+        cr.new_path()
+        cr.move_to(bx, ground_y)
+        cr.line_to(bx + bw, ground_y)
+        cr.line_to(bx + bw + skew, ground_y + depth)
+        cr.line_to(bx + skew, ground_y + depth)
+        cr.close_path()
         cr.fill()
     cr.restore()

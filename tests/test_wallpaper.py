@@ -255,7 +255,7 @@ class TestInfoMode(unittest.TestCase):
 class TestWallpaperCardStyle(unittest.TestCase):
     """整条链路走一遍：给了 compact，画出来的就是精简版那张卡片。"""
 
-    def _render(self, tmp: Path, compact: bool):
+    def _render(self, tmp: Path, compact: bool, scene_opts: dict | None = None):
         from chuang.weather import HourPoint, Weather
         tz = ZoneInfo("Asia/Shanghai")
         now = datetime.now(tz)
@@ -273,13 +273,33 @@ class TestWallpaperCardStyle(unittest.TestCase):
                 mock.patch.object(W, "CACHE", tmp):
             # adopt=False：就地重写槽位文件，**不碰** gsettings（测试不写用户桌面）
             worker.render_now(now, weather, True, False, (720, 460), 0,
-                              lambda *a: out.append(a), compact=compact, inset=52.0)
+                              lambda *a: out.append(a), compact=compact, inset=52.0,
+                              scene_opts=scene_opts)
             self._pump(lambda: bool(out))
         self.assertTrue(out, "壁纸渲染没有回调（后台线程没跑完？）")
         self.assertTrue(slots[0].exists(), "槽位文件没写出来")
         ui = worker.painter.ui
         return (slots[0].read_bytes(), bool(ui.info_compact), bool(ui.info_buttons),
-                float(ui.bottom_inset))
+                float(ui.bottom_inset), ui)
+
+    def test_the_scene_switches_reach_the_wallpaper(self):
+        """菜单 → 场景那几个开关也要管到桌面上的那张图。
+
+        壁纸有自己的画笔（后台线程里画），不同步就会出现"窗口里已经把行人收起来了，
+        桌面上他们还在走"。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            base = self._render(tmp, compact=False)
+            off = self._render(tmp, compact=False,
+                               scene_opts={"show_people": False,
+                                           "show_traffic": False,
+                                           "show_skyline": False})
+        self.assertTrue(off[4].show_people is False)
+        self.assertTrue(off[4].show_traffic is False)
+        self.assertFalse(off[4].show_skyline)
+        self.assertNotEqual(base[0], off[0],
+                            "场景开关没有传到壁纸那份画笔上（画出来一模一样）")
 
     @staticmethod
     def _pump(predicate, timeout: float = 10.0) -> bool:
@@ -300,8 +320,9 @@ class TestWallpaperCardStyle(unittest.TestCase):
     def test_the_card_style_reaches_the_renderer(self):
         import hashlib
         with tempfile.TemporaryDirectory() as d:
-            full, full_compact, buttons, inset = self._render(Path(d), compact=False)
-            slim, slim_compact, _b, _i = self._render(Path(d), compact=True)
+            full, full_compact, buttons, inset, _ui = self._render(
+                Path(d), compact=False)
+            slim, slim_compact, _b, _i, _ui2 = self._render(Path(d), compact=True)
         self.assertFalse(full_compact)
         self.assertTrue(slim_compact)
         # 桌面上的那张卡不该画"能点的东西"：那儿没有鼠标

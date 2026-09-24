@@ -106,8 +106,19 @@ def screen_bottom_inset() -> float:
     return 0.0
 
 
+def apply_scene_opts(painter, opts: dict | None) -> None:
+    """把"窗外画什么"的开关搬到壁纸那份画笔上（在渲染线程里、开画之前调）。
+
+    壁纸有自己的 SkyPainter（渲染跑在后台线程），所以窗口里改了场景开关，
+    必须**显式**同步过去——否则会出现"窗口里已经把行人和车收起来了，桌面上
+    它们还在走"。只在渲染线程开头改，别在主线程一边画一边改。
+    """
+    for field, value in (opts or {}).items():
+        setattr(painter.ui, field, bool(value))
+
+
 def render(path: Path, painter, scene, az0: float, size: tuple[int, int]) -> Path:
-    """把一帧天空画进 PNG。
+    """把一帧天空画进 PNG（跑在渲染线程里，只碰自己那份 painter）。
 
     画不画信息卡与长卷，由 painter.ui.show_info / show_ribbon 决定，
     所以"壁纸上包含此刻的事实"这类选项直接生效。
@@ -411,7 +422,8 @@ class Worker:
     def render_now(self, when: datetime, weather, show_info: bool, show_ribbon: bool,
                    size: tuple[int, int], slot: int, done,
                    adopt: bool = False, weather_off: bool = False,
-                   compact: bool = False, inset: float = 0.0) -> None:
+                   compact: bool = False, inset: float = 0.0,
+                   scene_opts: dict | None = None) -> None:
         """渲染"此刻"的一张壁纸。done(ok, message, slot) 在主线程被调用。
 
         adopt=False（常态）：**就地更新桌面正在显示的那个文件**。gnome-shell
@@ -421,6 +433,8 @@ class Worker:
         的解码结果（这就是"显示的是这个文件上一版"的来源）。
 
         inset：屏幕底下被系统面板 / dock 占掉的高度（见 screen_bottom_inset）。
+        scene_opts：菜单 → 场景里那几个开关（窗外画什么）。**必须跟窗口里一致**：
+        关了行人却只改了窗口那一份，桌面上照样有人走。
         """
         if not self._lock.acquire(blocking=False):
             return
@@ -434,6 +448,7 @@ class Worker:
                 self.painter.ui.info_buttons = False      # 桌面上没有鼠标
                 self.painter.ui.bottom_inset = float(inset or 0.0)
                 self.painter.ui.show_ribbon = show_ribbon
+                apply_scene_opts(self.painter, scene_opts)
                 if show_ribbon:
                     day = when.replace(hour=0, minute=0, second=0, microsecond=0)
                     self.painter.ui.ribbon = self.engine.ribbon(day, weather)
@@ -467,7 +482,7 @@ class Worker:
     def render_day(self, day: datetime, weather, show_info: bool, show_ribbon: bool,
                    size: tuple[int, int], frames: int, progress, done,
                    weather_off: bool = False, compact: bool = False,
-                   inset: float = 0.0) -> None:
+                   inset: float = 0.0, scene_opts: dict | None = None) -> None:
         """渲染一整天的 48 帧并生成动态壁纸 XML。"""
         if not self._lock.acquire(blocking=False):
             return
@@ -486,6 +501,7 @@ class Worker:
                 self.painter.ui.info_buttons = False      # 桌面上没有鼠标
                 self.painter.ui.bottom_inset = float(inset or 0.0)
                 self.painter.ui.show_ribbon = show_ribbon
+                apply_scene_opts(self.painter, scene_opts)
                 if show_ribbon:
                     self.painter.ui.ribbon = self.engine.ribbon(day, weather)
                     self.painter.ui.ribbon_surface = None

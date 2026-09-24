@@ -128,6 +128,10 @@ EXPECTED_TOGGLES = {
     "pin", "weather", "info", "infocompact", "ribbon",
     "autostart", "autostarthidden",
     "wallpaperauto", "wallpaperinfo", "wallpaperribbon", "autoupdate",
+    # 菜单 → 场景：窗外画什么（见 config.SCENE_SWITCHES）
+    "show_people", "show_traffic", "show_trees", "show_lamps", "show_planes",
+    "show_skyline", "show_clouds", "show_stars", "show_weatherfx",
+    "show_plant", "plant_sway",
 }
 EXPECTED_RADIOS = {"closebehavior", "wallpaperinterval", "wallpaperinfomode",
                    "framerate"}
@@ -153,6 +157,20 @@ SAFE_TO_ACTIVATE = {
     "win.infocompact": None,       # 只改信息卡怎么画
     "win.ribbon": None,
     "win.framerate": "60",         # 只改帧率上限（探针里还会真的验一次）
+    # 菜单 → 场景：每一项只改"窗外画不画"，不碰桌面、不联网
+    "win.show_people": None,
+    "win.show_traffic": None,
+    "win.show_trees": None,
+    "win.show_lamps": None,
+    "win.show_planes": None,
+    "win.show_skyline": None,
+    "win.show_clouds": None,
+    "win.show_stars": None,
+    "win.show_weatherfx": None,
+    "win.show_plant": None,
+    "win.plant_sway": None,
+    "win.sceneall": None,          # 一键：全画出来
+    "win.scenesky": None,          # 一键：只留天空
 }
 
 # 不激活的：要么会动用户的桌面，要么会联网装东西、开浏览器、结束进程。
@@ -553,6 +571,34 @@ def main() -> int:
 
         # 7b-6)（异步，见 _start_async_probes）预览到远处的一天：那天必须真的
         #       去问一次，问回来的要并进手里这份；同时"此刻"那份不能被顶掉。
+
+        # 7b-7) 菜单 → 场景：每一项开关都要在**三处**同时生效——配置（记得住）、
+        #       画笔（画得出）、菜单里的勾（看得见）。只改一处的老毛病就是
+        #       "重启之后它又自己回来了"。
+        from chuang.config import SCENE_SWITCHES
+        win._set_scene_switch("show_trees", False)
+        if win.painter.ui.show_trees or win.config.show_trees:
+            problems.append("场景开关没有落到配置 / 画笔上")
+        if win.action_state("show_trees"):
+            problems.append("场景开关没有同步到菜单里的那个勾")
+        win._set_scene_switch("show_trees", True)
+        if not (win.painter.ui.show_trees and win.config.show_trees):
+            problems.append("场景开关没能再打开")
+        # 一键"只看天空"：收起街上的一切，但天上的云、星、雨雪都还在
+        win._act_scene_sky()
+        results["scene_sky"] = {
+            f: bool(getattr(win.painter.ui, f))
+            for f, _label in SCENE_SWITCHES}
+        for field in ("show_people", "show_traffic", "show_trees", "show_lamps",
+                      "show_planes", "show_skyline"):
+            if getattr(win.painter.ui, field):
+                problems.append(f"「只看天空」之后 {field} 还开着")
+        for field in ("show_clouds", "show_stars", "show_weatherfx", "show_plant"):
+            if not getattr(win.painter.ui, field):
+                problems.append(f"「只看天空」把天上的 {field} 也关掉了")
+        win._act_scene_all()
+        if not all(getattr(win.painter.ui, f) for f, _l in SCENE_SWITCHES):
+            problems.append("「全部画出来」没有把开关都打开")
 
         # 7c) 帧率可调：选一个就得记下来，而且立刻按新节奏走
         win.activate("framerate", GLib.Variant.new_string("120"))

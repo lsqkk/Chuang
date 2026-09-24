@@ -78,11 +78,22 @@ class Scene:
     weather_now: bool = False       # 画面这一刻就是此刻（不是跳到别的时候）
     weather_at: float = 0.0         # 手上这份天气是什么时候问回来的（epoch）
     cloud: float = 0.0
+    # 云的层次（高云 / 中云 / 低云，0-100）。以前只有一个总云量，三种云画成
+    # 一样的团；现在按真实的层次画（卷云薄而高、层云低而厚）。
+    cloud_low: float = 0.0
+    cloud_mid: float = 0.0
+    cloud_high: float = 0.0
     code: int = 0
     weather_text: str = ""
     temp: float = 0.0
     apparent: float = 0.0
     humidity: float = 0.0
+    dew: float | None = None        # 露点（°C）
+    pressure: float = 0.0           # 海平面气压（hPa）
+    uv: float | None = None         # 紫外线指数
+    temp_max: float | None = None   # 这一天的最高 / 最低（日预报，没有就是 None）
+    temp_min: float | None = None
+    visibility: float = 0.0         # 那一刻的能见度（米）
     wind_speed: float = 0.0
     wind_dir: float = 0.0
     precip_strength: float = 0.0    # 0-1，雨丝画多密 / 多长 / 多快看它（weather.precip_strength）
@@ -255,6 +266,26 @@ class SkyEngine:
                 sc.weather_text = code_text(sc.code)
                 temp = weather.temp_at(when) if hourly else weather.temp
                 sc.temp = temp if temp is not None else weather.temp
+                # 云层 / 能见度 / 紫外线 / 气压 / 露点：逐小时表里有的就按那一刻算，
+                # 没有的（老缓存、调试用的假天气）留空——卡片上就不写这一项。
+                for attr in ("cloud_low", "cloud_mid", "cloud_high"):
+                    v = weather.hourly_at(when, attr) if hourly else None
+                    setattr(sc, attr, float(v) if v is not None else 0.0)
+                sc.visibility = (weather.visibility_at(when) if hourly
+                                 else weather.visibility) or 0.0
+                uv = weather.hourly_at(when, "uv") if hourly else weather.uv
+                sc.uv = float(uv) if uv is not None else None
+                if sc.weather_now:
+                    sc.pressure = float(getattr(weather, "pressure", 0.0) or 0.0)
+                    dew = getattr(weather, "dew", None)
+                    sc.dew = float(dew) if dew is not None else None
+                else:
+                    dew = weather.hourly_at(when, "dew") if hourly else None
+                    sc.dew = float(dew) if dew is not None else None
+                    pr = weather.hourly_at(when, "pressure") if hourly else None
+                    sc.pressure = float(pr) if pr is not None else 0.0
+                span = weather.day_extremes(when.date())
+                sc.temp_max, sc.temp_min = span if span else (None, None)
                 if sc.weather_now:
                     # 体感 / 湿度 / 风只有"此刻"这一份（逐小时接口里没有）
                     sc.apparent = weather.apparent

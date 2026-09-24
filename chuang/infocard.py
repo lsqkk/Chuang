@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from . import actions as actionmod
 from .render import clamp
 from .scene import compass
-from .weather import code_text, precip_kind, precip_label
+from .weather import code_text, precip_kind, precip_label, uv_text
 
 
 class InfoCard:
@@ -149,6 +149,8 @@ class InfoCard:
             # 但没有"体感 / 湿度 / 风"这三样（接口只给此刻的）
             lines += [f"那会儿　{sc.weather_text}　{sc.temp:.0f}°C",
                       f"云量　　{sc.cloud:.0f}%"]
+            if sc.temp_max is not None and sc.temp_min is not None:
+                lines.append(f"当天　　{sc.temp_min:.0f}°C ~ {sc.temp_max:.0f}°C")
             # 逐小时表里也有降水量：说"那会儿下多大"同样按真实雨量说
             if sc.precip_kind != "none":
                 who = sc.precip_label or sc.weather_text
@@ -161,7 +163,12 @@ class InfoCard:
         else:
             lines.append(f"现在　　{sc.weather_text}　{sc.temp:.0f}°C"
                          f"（体感 {sc.apparent:.0f}°C）")
+            if sc.temp_max is not None and sc.temp_min is not None:
+                lines.append(f"今日　　{sc.temp_min:.0f}°C ~ {sc.temp_max:.0f}°C"
+                             f"（当天最高 / 最低）")
             lines.append(f"云量　　{sc.cloud:.0f}%　　湿度 {sc.humidity:.0f}%")
+            if sc.dew is not None:
+                lines.append(f"露点　　{sc.dew:.0f}°C")
             lines.append(f"风　　　{compass(sc.wind_dir)}（{sc.wind_dir:.0f}°）"
                          f"{sc.wind_speed:.1f} km/h"
                          + (f"　阵风 {w.gusts:.1f} km/h" if w.gusts else ""))
@@ -174,6 +181,10 @@ class InfoCard:
                              f"能见度 {w.visibility / 1000:.1f} km")
             else:
                 lines.append(f"降水　　此刻没有　能见度 {w.visibility / 1000:.1f} km")
+            if sc.uv is not None:
+                lines.append(f"紫外线　{uv_text(sc.uv)}")
+            if sc.pressure:
+                lines.append(f"气压　　{sc.pressure:.0f} hPa")
             lines.append("")
             lines.append("数据　　Open-Meteo　" + (f"更新于 {stamp}" if stamp else "")
                          + ("（离线，上一次的结果）" if sc.weather_stale else ""))

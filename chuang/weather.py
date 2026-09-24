@@ -147,6 +147,29 @@ def precip_kind(code: int) -> str:
     return "none"
 
 
+def uv_text(index) -> str:
+    """紫外线指数说人话：数字 + 一档强度（WHO 那套分档：3 / 6 / 8 / 11）。
+
+    接口里一直有这个数，以前拿到手就扔了——可它是"要不要拉窗帘"这件事里
+    唯一说得清的数字。
+    """
+    try:
+        v = max(0.0, float(index))
+    except (TypeError, ValueError):
+        return "—"
+    if v < 3:
+        level = "弱"
+    elif v < 6:
+        level = "中等"
+    elif v < 8:
+        level = "强"
+    elif v < 11:
+        level = "很强"
+    else:
+        level = "极强"
+    return f"{v:.0f} {level}"
+
+
 def precip_strength(code: int, precip_mm: float = 0.0) -> float:
     """降水强度 0-1：雨丝的密度、长度、速度、透明度都看它。
 
@@ -189,6 +212,13 @@ class HourPoint:
     precip_prob: float = 0.0
     precip_mm: float = 0.0        # 那一小时的降水量（mm）
     vis: float = 24000.0          # 那一小时的能见度（米）
+    # 1.1.13 起的几样"接口给了、我们以前没用"的读数（老缓存里没有，就是 None）
+    cloud_low: float = 0.0
+    cloud_mid: float = 0.0
+    cloud_high: float = 0.0
+    dew: float | None = None      # 露点（°C）
+    pressure: float = 0.0         # 海平面气压（hPa）
+    uv: float | None = None       # 紫外线指数
 
 
 def _day_key(when) -> str:
@@ -222,6 +252,15 @@ class Weather:
     gusts: float = 0.0
     precip: float = 0.0
     visibility: float = 24000.0
+    # 1.1.13：几样以前"拿到手就扔掉"的读数——露点、气压、紫外线、云的高低层。
+    # 老缓存里没有它们（就是默认值），画面照旧，只是少几个字。
+    dew: float | None = None
+    pressure: float = 0.0
+    uv: float | None = None
+    cloud_low: float = 0.0
+    cloud_mid: float = 0.0
+    cloud_high: float = 0.0
+    daily: dict = field(default_factory=dict)   # {"2026-09-24": (最高, 最低)}
     hourly: list[HourPoint] = field(default_factory=list)
     place: str = ""
     lat: float = 0.0               # 这份数据是给哪座城的（0 = 未知）
@@ -281,6 +320,11 @@ class Weather:
         pts = self._index().get(_day_key(_naive(when)))
         if not pts:
             return None
+        return self._interp(pts, when, attr, linear)
+
+    @staticmethod
+    def _interp(pts, when: datetime, attr: str, linear: bool = True):
+        """在某一天的逐小时点里插值出 attr 那一列（pts 已保证非空）。"""
         if len(pts) == 1:
             return float(getattr(pts[0], attr))
         when = _naive(when)
@@ -314,10 +358,64 @@ class Weather:
         v = self._at(when, "code", linear=False)
         return None if v is None else int(round(v))
 
+    def hourly_at(self, when: datetime, attr: str):
+        """逐小时表里任意一列，插值到某一刻；没有这一列 / 这一列是空的返回 None。
+
+        1.1.13 加的露点、气压、紫外线、云的高低层都走这里——它们不属于
+        `_at()` 那几个"一定有值"的列（老缓存里就没有），所以缺了要给 None，
+        而不是抛异常或者编一个 0 出来。
+
+        某一列只有部分时刻有值（接口偶尔缺格）时，只在**有值的那些点**之间插值：
+        否则一个 None 会把前后几小时全变成"查不到"。
+        """
+        points = self._index().get(_day_key(_naive(when)))
+        if not points:
+            return None
+        try:
+            filled = [p for p in points if getattr(p, attr, None) is not None]
+            if not filled:
+                return None
+            return self._interp(filled, when, attr)
+        except (TypeError, ValueError):
+            return None
+
+    def day_extremes(self, day) -> tuple[float, float] | None:
+        """那一天的（最高, 最低）气温：优先用接口给的日预报，没有就按逐小时算。
+
+        卡片上写"今日 12° ~ 24°"用的是它。两个来源都要能用：日预报是接口直接
+        给的，逐小时那张表是本来就有的——老缓存里没有 daily，也不会因此空着。
+        """
+        key = _day_key(_naive(day)) if not isinstance(day, str) else day[:10]
+        row = self.daily.get(key)
+        if row:
+            try:
+                return float(row[0]), float(row[1])
+            except (TypeError, ValueError, IndexError):
+                pass
+        points = self._index().get(key)
+        if not points:
+            return None
+        temps = [p.temp for p in points if p.temp is not None]
+        if not temps:
+            return None
+        return max(temps), min(temps)
+
 
 def _naive(dt: datetime) -> datetime:
     """统一成"不带时区的本地时间"，方便和 Open-Meteo 返回的本地时刻比较。"""
-    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+    if isinstance(dt, datetime):
+        return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+    return dt                          # 只是个 date：原样用
+
+
+def _opt_float(value):
+    """能变成数就是数，否则 None（接口给 null / 缺字段时都用得上）。"""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _fetch_json(url: str, timeout: float = 9.0):
@@ -340,9 +438,14 @@ def fetch(lat: float, lon: float, tz: str = "auto",
         "longitude": f"{lon:.4f}",
         "current": ("temperature_2m,relative_humidity_2m,apparent_temperature,"
                     "precipitation,weather_code,cloud_cover,wind_speed_10m,"
-                    "wind_direction_10m,wind_gusts_10m"),
+                    "wind_direction_10m,wind_gusts_10m,dew_point_2m,pressure_msl,"
+                    "cloud_cover_low,cloud_cover_mid,cloud_cover_high"),
         "hourly": ("temperature_2m,weather_code,cloud_cover,precipitation_probability,"
-                   "precipitation,visibility"),
+                   "precipitation,visibility,dew_point_2m,pressure_msl,uv_index,"
+                   "cloud_cover_low,cloud_cover_mid,cloud_cover_high"),
+        # 日预报：卡片上"今日 12° ~ 24°"用它（逐小时表也算得出来，但接口直接
+        # 给了更准的日最高/最低）。日出日落**不要**——那是本地算的，见 DESIGN。
+        "daily": "temperature_2m_max,temperature_2m_min",
         "timezone": tz or "auto",
         "wind_speed_unit": "kmh",
     }
@@ -365,6 +468,11 @@ def fetch(lat: float, lon: float, tz: str = "auto",
     w.wind_dir = float(cur.get("wind_direction_10m") or 0.0)
     w.gusts = float(cur.get("wind_gusts_10m") or 0.0)
     w.precip = float(cur.get("precipitation") or 0.0)
+    w.dew = _opt_float(cur.get("dew_point_2m"))
+    w.pressure = float(cur.get("pressure_msl") or 0.0)
+    w.cloud_low = float(cur.get("cloud_cover_low") or 0.0)
+    w.cloud_mid = float(cur.get("cloud_cover_mid") or 0.0)
+    w.cloud_high = float(cur.get("cloud_cover_high") or 0.0)
     h = data.get("hourly", {})
     times = h.get("time") or []
 
@@ -373,6 +481,16 @@ def fetch(lat: float, lon: float, tz: str = "auto",
         if i >= len(values) or values[i] is None:
             return float(fallback)
         return float(values[i])
+
+    def opt(name, i):
+        """可选项：没有那一列 / 那一格是空的 → None（别编一个 0 出来）。"""
+        values = h.get(name) or []
+        if i >= len(values) or values[i] is None:
+            return None
+        try:
+            return float(values[i])
+        except (TypeError, ValueError):
+            return None
 
     for i, t in enumerate(times):
         try:
@@ -387,8 +505,24 @@ def fetch(lat: float, lon: float, tz: str = "auto",
             precip_prob=col("precipitation_probability", i),
             precip_mm=col("precipitation", i),
             vis=col("visibility", i, 24000.0),
+            cloud_low=col("cloud_cover_low", i),
+            cloud_mid=col("cloud_cover_mid", i),
+            cloud_high=col("cloud_cover_high", i),
+            dew=opt("dew_point_2m", i),
+            pressure=col("pressure_msl", i),
+            uv=opt("uv_index", i),
         ))
     w.invalidate()
+    d = data.get("daily", {})
+    days = d.get("time") or []
+    for i, day in enumerate(days):
+        hi = (d.get("temperature_2m_max") or [])
+        lo = (d.get("temperature_2m_min") or [])
+        if i < len(hi) and i < len(lo) and hi[i] is not None and lo[i] is not None:
+            try:
+                w.daily[str(day)[:10]] = (float(hi[i]), float(lo[i]))
+            except (TypeError, ValueError):
+                continue
     # "此刻"的能见度取离现在最近的那一格。以前直接拿 00:00 那格，而且请求里
     # 根本没要 visibility，于是详情里永远写着默认的 24 km。
     vis_now = w.visibility_at(_now_in(tz) if tz and tz != "auto" else datetime.now())
@@ -427,13 +561,18 @@ def merge(older: Weather | None, newer: Weather, today=None) -> Weather:
     for p in newer.hourly:
         rows[p.when] = p
     newer.hourly = [rows[k] for k in sorted(rows)]
+    # 日预报（最高 / 最低）按天取并集：补问某一小时的那一枪只带回那几天
+    merged_daily = dict(older.daily or {})
+    merged_daily.update(newer.daily or {})
+    newer.daily = merged_daily
     if today is not None:               # 太老的那些天留着也没用
         cutoff = today - timedelta(days=PAST_LIMIT_DAYS + 1)
         newer.hourly = [p for p in newer.hourly if p.when.date() >= cutoff]
     newer.invalidate()
     if not covers_now:
         for name in ("temp", "apparent", "humidity", "code", "cloud", "wind_speed",
-                     "wind_dir", "gusts", "precip", "visibility"):
+                     "wind_dir", "gusts", "precip", "visibility", "dew",
+                     "pressure", "uv", "cloud_low", "cloud_mid", "cloud_high"):
             setattr(newer, name, getattr(older, name))
         newer.fetched_at = older.fetched_at
         newer.stale, newer.error = older.stale, older.error
@@ -502,9 +641,14 @@ def _serialize(w: Weather) -> dict:
         "humidity": w.humidity, "code": w.code, "cloud": w.cloud,
         "wind_speed": w.wind_speed, "wind_dir": w.wind_dir, "gusts": w.gusts,
         "precip": w.precip, "visibility": w.visibility,
+        "dew": w.dew, "pressure": w.pressure, "uv": w.uv,
+        "cloud_low": w.cloud_low, "cloud_mid": w.cloud_mid,
+        "cloud_high": w.cloud_high,
+        "daily": {k: [v[0], v[1]] for k, v in (w.daily or {}).items()},
         "lat": w.lat, "lon": w.lon,
         "hourly": [[p.when.isoformat(), p.cloud, p.code, p.temp, p.precip_prob,
-                    p.precip_mm, p.vis] for p in w.hourly],
+                    p.precip_mm, p.vis, p.cloud_low, p.cloud_mid, p.cloud_high,
+                    p.dew, p.pressure, p.uv] for p in w.hourly],
     }
 
 
@@ -512,19 +656,36 @@ def _deserialize(d: dict) -> Weather:
     w = Weather(ok=True, stale=True)
     w.fetched_at = float(d.get("fetched_at") or 0.0)
     for key in ("temp", "apparent", "humidity", "cloud", "wind_speed",
-                "wind_dir", "gusts", "precip", "visibility"):
+                "wind_dir", "gusts", "precip", "visibility", "pressure",
+                "cloud_low", "cloud_mid", "cloud_high"):
         setattr(w, key, float(d.get(key) or 0.0))
+    w.dew = _opt_float(d.get("dew"))
+    w.uv = _opt_float(d.get("uv"))
+    for key, value in (d.get("daily") or {}).items():
+        try:
+            w.daily[str(key)[:10]] = (float(value[0]), float(value[1]))
+        except (TypeError, ValueError, IndexError):
+            continue
     w.lat = float(d.get("lat") or 0.0)
     w.lon = float(d.get("lon") or 0.0)
     w.code = int(d.get("code") or 0)
     for row in d.get("hourly") or []:
         try:
-            # 老缓存的行只有 5 列（没有降水与能见度），照旧读得进来
+            # 老缓存的行只有 5 列（没有降水与能见度）、再老一点的更短，
+            # 照旧读得进来：多出来的那几列（云层 / 露点 / 气压 / 紫外线）
+            # 老缓存里没有，读成默认值就行。
+            opt = _opt_float
             w.hourly.append(HourPoint(
                 datetime.fromisoformat(row[0]), float(row[1]), int(row[2]),
                 float(row[3]), float(row[4]),
                 float(row[5]) if len(row) > 5 else 0.0,
-                float(row[6]) if len(row) > 6 else 24000.0))
+                float(row[6]) if len(row) > 6 else 24000.0,
+                float(row[7] or 0.0) if len(row) > 7 else 0.0,
+                float(row[8] or 0.0) if len(row) > 8 else 0.0,
+                float(row[9] or 0.0) if len(row) > 9 else 0.0,
+                opt(row[10]) if len(row) > 10 else None,
+                float(row[11] or 0.0) if len(row) > 11 else 0.0,
+                opt(row[12]) if len(row) > 12 else None))
         except (ValueError, IndexError, TypeError):
             continue
     w.invalidate()

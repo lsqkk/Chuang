@@ -18,6 +18,7 @@ from gi.repository import Pango, PangoCairo  # noqa: E402
 from .palette import mix, mix_rgb, shade
 from .scene import (Scene, compass, duration_zh, human_hint, phase_name_simple,
                     skyline_seed)
+from .weather import uv_text
 from . import city as _city
 from . import street
 
@@ -53,6 +54,38 @@ def scene_height(h: float) -> float:
 
 def rgba(color, alpha=1.0):
     return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0, alpha)
+
+
+_NOISE_TILE: cairo.ImageSurface | None = None
+
+
+def noise_tile(size: int = 96) -> cairo.ImageSurface:
+    """一张"抖动"用的噪声贴片：把渐变的色带打散成看不出的颗粒。
+
+    Cairo 的线性渐变在 8 位色深上会显出一条条色带（天刚黑那阵最明显，
+    天顶到地平线一圈一圈的）。盖一层**±1 个色阶**的随机噪声就没了：
+    强度只有 1/255，肉眼看不见，但足够把量化误差打散。
+    整张图只生成一次，之后每帧只是贴上去（而且贴在天色那张缓存里，更便宜）。
+    """
+    global _NOISE_TILE
+    if _NOISE_TILE is not None:
+        return _NOISE_TILE
+    rnd = random.Random(20260924)
+    surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+    stride = surf.get_stride()
+    buf = bytearray(stride * size)
+    for i in range(size * size):
+        pick = rnd.random()
+        off = (i // size) * stride + (i % size) * 4
+        if pick < 0.34:                     # 亮一格（预乘：R=G=B=A=1）
+            buf[off] = buf[off + 1] = buf[off + 2] = buf[off + 3] = 1
+        elif pick < 0.68:                   # 暗一格
+            buf[off + 3] = 1
+        # 其余留全透明：本来就该是什么色就是什么色
+    memoryview(surf.get_data()).cast("B")[:] = buf
+    surf.mark_dirty()
+    _NOISE_TILE = surf
+    return surf
 
 
 def rgba01(color, alpha=1.0):
@@ -434,7 +467,10 @@ class WeatherFX:
         # （代码还是 63、降水量从 1 涨到 5），雨丝一根都不会多——画面看着
         # "毛毛雨和大雨差不多"，有一半是这里来的。
         sig = (round(scene.cloud / 4), scene.code, round(scene.wind_speed),
-               round(scene.wind_dir / 10), kind, round(strength * 12))
+               round(scene.wind_dir / 10), kind, round(strength * 12),
+               # 云的**层次**也要进 key：低云满、高云空 和 反过来，画出来不一样
+               round(scene.cloud_low / 8), round(scene.cloud_mid / 8),
+               round(scene.cloud_high / 8))
         if sig == self.signature:
             return
         self.signature = sig
@@ -442,10 +478,18 @@ class WeatherFX:
         cover = clamp(scene.cloud / 100.0, 0.0, 1.0)
         if scene.has_weather and scene.fog:
             cover = max(cover, 0.85)
+        # 三层的量各算各的：接口给了分层云量就用真的（高层的卷云薄、低层的
+        # 层云厚），没给（老缓存 / 假天气）就按原来那套比例从总云量里分。
+        low = clamp(getattr(scene, "cloud_low", 0.0) / 100.0, 0.0, 1.0)
+        mid = clamp(getattr(scene, "cloud_mid", 0.0) / 100.0, 0.0, 1.0)
+        high = clamp(getattr(scene, "cloud_high", 0.0) / 100.0, 0.0, 1.0)
+        if max(low, mid, high) <= 0.0:
+            low, mid, high = cover, 0.84 * cover, 0.34 * cover
+        cover = max(cover, low, mid, high)
         layers = [
-            ("high", 0.10 + 0.60 * cover, 26, (26, 70), (0.26, 0.46), 1.9),
-            ("mid", 0.80 * cover, 22, (6, 38), (0.50, 0.82), 1.0),
-            ("low", 0.95 * cover, 18, (0, 13), (0.62, 1.00), 0.55),
+            ("high", high, 30, (28, 74), (0.30, 0.52), 2.1),
+            ("mid", mid, 22, (6, 40), (0.52, 0.84), 1.0),
+            ("low", low, 18, (0, 13), (0.64, 1.00), 0.55),
         ]
         clouds = []
         for name, amount, n, (alo, ahi), (slo, shi), speed in layers:
@@ -605,12 +649,26 @@ class UIState:
         self.toast = ""
         self.toast_icon = "info"        # 提示条左边那枚小图标
         self.toast_until = 0.0
+        self.toast_span = 0.0           # 这条提示一共停留几秒（画那条细线用）
         self.toast_rect = (0.0, 0.0, 0.0, 0.0)
         self.toast_detail = ""          # 非空时：点提示条可以看/复制完整内容
         self.hint_shown = False
         # 画布底下被系统面板 / dock 挡住的像素数（桌面壁纸渲染时才非 0）。
         # 长卷与它的时刻标签得让开这一条，否则正好被面板压住（见 _draw_ribbon）。
         self.bottom_inset = 0.0
+        # ---- 窗外画什么（菜单 → 场景；字段名与 config.SCENE_SWITCHES 一致）----
+        # 全部默认为真：什么都不动的时候，画面和 1.1.12 一模一样。
+        self.show_people = True
+        self.show_traffic = True
+        self.show_trees = True
+        self.show_lamps = True
+        self.show_planes = True
+        self.show_skyline = True
+        self.show_clouds = True
+        self.show_stars = True
+        self.show_weatherfx = True
+        self.show_plant = True
+        self.plant_sway = True
 
 
 @dataclass
@@ -711,21 +769,30 @@ class SkyPainter:
         direct = self._direct_light(scene)
 
         self._draw_sky(cr, w, hs, scene, glow_x, sun_y)
-        self._draw_stars(cr, w, hs, scene, az0, fov)
+        if self.ui.show_stars:
+            self._draw_stars(cr, w, hs, scene, az0, fov)
         self._draw_sun(cr, w, hs, scene, sun_x, sun_d, fov, direct)
         self._draw_moon(cr, w, hs, scene, az0, fov)
-        self._draw_clouds(cr, w, hs, scene, az0, fov)
-        self._draw_plane(cr, w, hs, scene)
+        if self.ui.show_clouds:
+            self._draw_clouds(cr, w, hs, scene, az0, fov)
+        if self.ui.show_planes:
+            self._draw_plane(cr, w, hs, scene)
         light = self._light(scene, az0, direct)
-        self._draw_skyline(cr, w, hs, scene, light)
+        if self.ui.show_skyline:
+            self._draw_skyline(cr, w, hs, scene, light)
         self._draw_ground(cr, w, hs, scene, az0, fov, light)
-        self._draw_street(cr, w, hs, scene, light)
+        if self.ui.show_people or self.ui.show_traffic or self.ui.show_trees \
+                or self.ui.show_lamps:
+            self._draw_street(cr, w, hs, scene, light)
         # 雨雪画在"窗外"那一层：窗台、玻璃反光、盆栽都在它前面。
         # （以前它排在最后，雨会落在窗台和花盆上——那是"下在屋里"了。）
-        self._draw_precip(cr, w, h, scene)
+        if self.ui.show_weatherfx:
+            self._draw_precip(cr, w, h, scene)
         self._draw_vignette(cr, w, h, scene)
         self._draw_sill(cr, w, h, scene, az0, fov, sun_x, direct, hs)
-        self._draw_flash(cr, w, h, scene)
+        self._draw_plant_layer(cr, w, h, scene, az0, fov, direct, hs)
+        if self.ui.show_weatherfx:
+            self._draw_flash(cr, w, h, scene)
         if chrome and self.ui.show_ribbon:
             self._draw_ribbon(cr, w, hs, scene, canvas_h=h)
         else:
@@ -869,6 +936,14 @@ class SkyPainter:
             cr.set_source(vg)
             cr.rectangle(0, 0, w, horizon_y)
             cr.fill()
+
+        # 最后抖一层极淡的噪声：把渐变在 8 位色深上的色带打散（见 noise_tile）。
+        # 夜色越深、渐变越长，色带越明显，所以这一笔整片天空都要盖。
+        pat = cairo.SurfacePattern(noise_tile())
+        pat.set_extend(cairo.EXTEND_REPEAT)
+        cr.set_source(pat)
+        cr.rectangle(0, 0, w, h)
+        cr.fill()
         return surf
 
     # ------------------------------------------------------------------
@@ -1288,7 +1363,10 @@ class SkyPainter:
         t = (when.hour * 3600 + when.minute * 60 + when.second
              + getattr(when, "microsecond", 0) / 1e6)
         street.draw(cr, w, h, scene, self._street_roster, t, light, near_col,
-                    self._layers(scene).lamps, self._street_trees or ())
+                    self._layers(scene).lamps if self.ui.show_lamps else (),
+                    self._street_trees or (),
+                    people=self.ui.show_people, traffic=self.ui.show_traffic,
+                    trees_on=self.ui.show_trees)
 
     def _lit_fraction(self, scene: Scene) -> float:
         """此刻有多少比例的窗户亮着灯。"""
@@ -1381,7 +1459,7 @@ class SkyPainter:
         return surf
 
     # ------------------------------------------------------------------
-    # 窗台：受光、光斑、那盆小植物与它的影子
+    # 窗台：受光、光斑（离屏缓存）；盆栽单独在 _draw_plant_layer 里现画
     # ------------------------------------------------------------------
     def _draw_sill(self, cr, w, h, scene: Scene, az0, fov, sun_x, direct,
                    hs=None):
@@ -1505,8 +1583,8 @@ class SkyPainter:
             yy = y0 + sill_h * (i / 5.2)
             cr.rectangle(0, yy, w, 1)
             cr.fill()
-
-        self._draw_plant(cr, w, hs, scene, az0, fov, direct, lit)
+        # 盆栽**不在这里画**：它会随风摇，得每帧现画（见 _draw_plant_layer）。
+        # 窗台这一层才是贵的那块（石头纹理 + 光斑 + 木框），继续离屏缓存。
 
     def _plant_shapes(self, cr, x, y, scale, green=(0.20, 0.40, 0.26), flat=None):
         """在 (x, y) 画一盆小植物：y 是花盆底，scale 由窗口高度决定。
@@ -1652,19 +1730,71 @@ class SkyPainter:
             cr.restore()
         cr.restore()
 
-    def _draw_plant(self, cr, w, h, scene: Scene, az0, fov, direct, lit_color):
+    def _draw_plant_layer(self, cr, w, h, scene: Scene, az0, fov, direct, hs):
+        """盆栽单独一层：**每帧现画**，所以它摇得起来。
+
+        以前它与窗台一起烤在同一张离屏缓存里（那张图只随光变化），于是
+        "随风摇曳"根本无从谈起。窗台才是真正贵的那块（石头纹理、光斑、木框），
+        所以拆开来各归各的：窗台照旧缓存，植物每帧现画（十几条叶子路径）。
+        传进来的 h 是**景色高度**（hs），和窗台排版用的是同一个高度。
+        """
+        if not self.ui.show_plant:
+            return
+        self._draw_plant(cr, w, h, scene, az0, direct)
+
+    def _plant_sway(self, scene: Scene, az0: float) -> float:
+        """这盆植物此刻弯成什么样：每往上一个像素，横向偏多少像素。
+
+        风向是"来向"，所以风吹的方向是 +180°；屏幕上的横向分量取相对方位角的
+        正弦（窗朝向 az0）。风越大弯得越多，另外叠一个很慢的摆动——一点风都没有
+        的时候叶子也还在轻轻抖，不然窗台看着是死的。
+        """
+        t = _time.time()
+        wave = (math.sin(t * 0.85 + 0.7) * 0.62 + math.sin(t * 2.30 + 2.1) * 0.38)
+        if not (scene.has_weather and self.ui.plant_sway):
+            # 没有风的数据（或用户关掉了摇曳）：只留一点点"呼吸"的抖动
+            return 0.008 * wave
+        wind = clamp(scene.wind_speed / 24.0, 0.0, 1.0) ** 0.85
+        if wind <= 0.01:
+            return 0.010 * wave
+        rel = math.radians(((scene.wind_dir + 180.0 - az0 + 180.0) % 360.0) - 180.0)
+        return math.sin(rel) * 0.17 * wind * (0.62 + 0.38 * wave) + 0.02 * wind * wave
+
+    @staticmethod
+    def _plant_shadow_geom(scene: Scene, az0: float, plant_h: float):
+        """盆栽投在窗台上的那团影子：(横移, 下移, 浓度系数)，都按株高算好。
+
+        光源在窗外很远的地方（太阳挂在城市的天空里），影子就落在**窗台这个
+        水平面**上、朝观察者这一侧（屏幕下方）拉长；太阳偏东/偏西时再往那一侧
+        的背光面斜过去。以前的写法只有一个横向的斜切：影子既没有向下落，
+        太阳偏西时还会被推到画面外（x 偏移上千像素），看上去就是用户说的
+        "影子朝上 / 干脆没有影子"。
+
+        长度按 1/tan(高度角) 算，但**屏幕上要收着画**：真按物理比例来，低太阳
+        下那团影子会长到横穿整扇窗（窗台在画面里只有百来像素深）。所以这里等比
+        收进"半个株宽的横向、大半株高的纵向"，并且影子越长越淡。
+        """
+        d_rel = ((scene.sun_az - az0 + 180) % 360) - 180
+        alt = max(scene.sun_alt, 5.0)
+        ratio = clamp(1.0 / math.tan(math.radians(alt)), 0.20, 2.6)
+        dx = -math.sin(math.radians(d_rel)) * ratio * 0.90 * plant_h
+        dy = math.cos(math.radians(d_rel)) * ratio * 0.62 * plant_h
+        scale = min(1.0, 0.62 * plant_h / max(1e-6, abs(dx)),
+                    0.85 * plant_h / max(1e-6, dy))
+        fade = clamp(1.15 - 0.42 * ratio, 0.42, 1.0)
+        return dx * scale, dy * scale, fade
+
+    def _draw_plant(self, cr, w, h, scene: Scene, az0, direct):
         mu = scene.mood
         x = 0.115 * w
         y = 0.918 * h
         s = clamp(h / 700.0, 0.72, 1.7)
         plant_h = 104.0 * s
-        d_rel = ((scene.sun_az - az0 + 180) % 360) - 180
-        alt = max(scene.sun_alt, 0.6)
-        shadow_len = clamp(1.0 / math.tan(math.radians(alt)), 0.0, 6.0) * plant_h
-        dx = -math.sin(math.radians(d_rel)) * shadow_len * 0.42
-        dy = math.cos(math.radians(d_rel)) * shadow_len * 0.09
+        sway = self._plant_sway(scene, az0)
+        dx, dy, fade = self._plant_shadow_geom(scene, az0, plant_h)
+        kx, ky = dx / plant_h, dy / plant_h
 
-        # 环境遮光（花盆底下那圈）
+        # 环境遮光（花盆底下那圈）：贴着盆底，影子才有"落"在台面上的感觉
         cr.save()
         soft = cairo.RadialGradient(x, y, 0, x, y, 46 * s)
         soft.add_color_stop_rgba(0, 0, 0, 0, 0.34)
@@ -1674,24 +1804,48 @@ class SkyPainter:
         cr.fill()
         cr.restore()
 
-        # 真实的影子：方向与长短由太阳方位角、高度角决定
+        # 真实的影子：方向与长短由太阳方位角、高度角决定（见 _plant_shadow_geom）
         if direct > 0.03:
-            shadow_col = mix_rgb((0.09, 0.08, 0.10), tuple(c / 255 for c in mu.horizon), 0.35)
-            kx = dx / plant_h
-            ky = dy / plant_h
-            for k, a in ((0.96, 0.62), (1.06, 0.30), (1.18, 0.14)):
-                cr.save()
-                # 影子只落在窗台上；按"高度→地面偏移"的仿射变换把整株压到台面上
-                cr.rectangle(0, SILL_TOP * h, w, h - SILL_TOP * h)
-                cr.clip()
-                cr.transform(cairo.Matrix(xx=1.0, yx=0.0, xy=-kx * k, yy=1.0 - ky * k,
-                                          x0=kx * k * y, y0=ky * k * y))
-                self._plant_shapes(cr, x, y, s,
+            # 影子画在 1/4 分辨率的离屏图上再放大回去：Cairo 没有模糊，
+            # 但"缩小再双线性放大"就是一次廉价的高斯模糊——植物的影子本来就
+            # 是软的（叶子之间全是缝），画成硬边的剪影会像水里的倒影。
+            ss = 0.25
+            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32,
+                                      max(2, int(w * ss) + 2), max(2, int(h * ss) + 2))
+            scr = cairo.Context(surf)
+            scr.scale(ss, ss)
+            shadow_col = mix_rgb((0.09, 0.08, 0.10),
+                                 tuple(c / 255 for c in mu.horizon), 0.35)
+            for k, a in ((0.94, 0.40), (1.02, 0.28), (1.12, 0.18), (1.24, 0.10)):
+                # 投影：株高 u → 台面上的 (kx·u, ky·u)。纵向是"镜像"的——
+                # 叶子长在盆上方，影子落在盆前方；横向再叠上随风的那一点弯。
+                scr.save()
+                scr.transform(cairo.Matrix(
+                    xx=1.0, yx=0.0,
+                    xy=-(kx + sway) * k, yy=-ky * k,
+                    x0=(kx + sway) * k * y, y0=(1.0 + ky * k) * y))
+                self._plant_shapes(scr, x, y, s,
                                    flat=(shadow_col[0], shadow_col[1], shadow_col[2],
-                                         a * direct))
-                cr.restore()
+                                         a * fade * direct))
+                scr.restore()
+            # 影子只落在窗台上（窗框之下那一片），别糊到街上/花盆上面去
+            cr.save()
+            cr.rectangle(0, SILL_TOP * h, w, h - SILL_TOP * h)
+            cr.clip()
+            cr.scale(1.0 / ss, 1.0 / ss)
+            pat = cairo.SurfacePattern(surf)
+            pat.set_filter(cairo.FILTER_GOOD)
+            cr.set_source(pat)
+            cr.paint()
+            cr.restore()
 
+        # 本体：绕盆底（有叶子的那一段）做一个轻微的斜切——风往哪边吹就往哪边弯
+        cr.save()
+        if abs(sway) > 1e-4:
+            cr.transform(cairo.Matrix(xx=1.0, yx=0.0, xy=-sway, yy=1.0,
+                                      x0=sway * y, y0=0.0))
         self._draw_plant_body(cr, w, h, x, y, s, scene, az0)
+        cr.restore()
 
     def _draw_plant_body(self, cr, w, h, x, y, s, scene: Scene, az0):
         mu = scene.mood
@@ -2131,6 +2285,15 @@ class SkyPainter:
             round(scene.apparent), round(scene.humidity),
             round(scene.wind_speed, 1), round(scene.wind_dir),
             scene.precip_kind, round(scene.precip_mm, 2),
+            # 1.1.13 新上卡的那几样（小字条与主角副行）：**看得见的字都得进 key**
+            tuple(self._info_chips(scene)),
+            None if scene.uv is None else round(scene.uv),
+            None if scene.dew is None else round(scene.dew),
+            None if scene.pressure is None else round(scene.pressure),
+            None if scene.temp_max is None else round(scene.temp_max),
+            None if scene.temp_min is None else round(scene.temp_min),
+            # 卡上那几行**画出来的字**（主角、指标格的标题 / 数值 / 副值）
+            tuple((r.icon, r.label, r.value, r.note) for r in self._rows(scene)),
             tuple(round(c) for c in scene.mood.horizon),
             tuple(sorted((k, str(v)) for k, v in scene.events.items())),
         )
@@ -2140,12 +2303,18 @@ class SkyPainter:
 
         离屏图裁多大、卡片画多高，用的是同一份数字——分开算迟早会对不上
         （不是被裁掉一条边，就是底下多出一块空白）。
+
+        版式分三层（1.1.13 重排）：**主角**是此刻的天气（大字温度那一块），
+        **指标格**是太阳月亮这几个"点了能跳过去"的时刻（两列，省一半高度），
+        其余读数（体感 / 湿度 / 风 / 能见度…）压成一排小字条。以前是一模一样的
+        一长溜，谁也看不出哪个重要。
         """
         scale = clamp(min(w / 1000.0, h / 620.0), 0.78, 1.5)
         pad = 16 * scale
-        card_w = clamp(w * 0.42, 296 * scale, 428 * scale)
+        card_w = clamp(w * 0.44, 312 * scale, 452 * scale)
         compact = bool(self.ui.info_compact)
-        rows = self._rows(scene)
+        rows, hero, grid, rest = self._info_groups(scene)
+        chips = [] if compact else self._info_chips(scene)
         per_line = max(8, int((card_w - pad * 2 - 12 * scale) / (12.4 * scale)))
         hint_lines = wrap_cjk(human_hint(scene), per_line)
         if compact:
@@ -2155,31 +2324,133 @@ class SkyPainter:
         show_arc = bool(sunr and suns and suns > sunr) and not compact
         head_h = 30 * scale
         time_h = (34 if compact else 44) * scale
+        hero_h = 0.0 if compact else (54 * scale if hero is not None else 0.0)
         arc_h = 30 * scale if show_arc else 0
-        div_h = 12 * scale if not compact else 0
-        row_h = 24 * scale
-        rows_h = 0 if compact else row_h * len(rows)
+        div_h = 11 * scale if not compact else 0
+        cell_h = 31 * scale
+        grid_lines = 0 if compact else (len(grid) + 1) // 2
+        grid_h = grid_lines * cell_h if grid_lines else 0.0
+        chip_gap = 6 * scale
+        chip_w = card_w - pad * 2
+        # 小字条按"能放下几个就放几个"折行（见 _chip_rows）
+        chip_rows = (self._chip_rows(chips, chip_w, scale) if chips else [])
+        chip_line_h = 19 * scale
+        chip_h = (len(chip_rows) * (chip_line_h + chip_gap) + 2 * scale
+                  if chip_rows else 0.0)
         hint_h = 19 * scale * len(hint_lines) + 6 * scale
         foot_h = 22 * scale
-        card_h = (pad + head_h + time_h + arc_h + div_h + rows_h + hint_h
-                  + foot_h + pad * 0.5)
+        card_h = (pad + head_h + time_h + hero_h + arc_h + div_h + grid_h
+                  + (6 * scale if (grid_h and chip_h) else 0.0) + chip_h
+                  + hint_h + foot_h + pad * 0.5)
         return {
             "scale": scale, "pad": pad, "card_w": card_w, "card_h": card_h,
-            "rows": rows, "compact": compact, "hint_lines": hint_lines,
+            "rows": rows, "hero": hero, "grid": grid, "rest": rest,
+            "chips": chips, "chip_rows": chip_rows,
+            "compact": compact, "hint_lines": hint_lines,
             "show_arc": show_arc, "sunr": sunr, "suns": suns,
-            "head_h": head_h, "time_h": time_h, "arc_h": arc_h, "div_h": div_h,
-            "row_h": row_h, "rows_h": rows_h, "hint_h": hint_h, "foot_h": foot_h,
+            "head_h": head_h, "time_h": time_h, "hero_h": hero_h,
+            "arc_h": arc_h, "div_h": div_h, "cell_h": cell_h,
+            "grid_lines": grid_lines, "grid_h": grid_h,
+            "chip_gap": chip_gap, "chip_w": chip_w, "chip_line_h": chip_line_h,
+            "chip_h": chip_h, "hint_h": hint_h, "foot_h": foot_h,
             "accent": scene.mood.horizon,
         }
+
+    def _info_groups(self, scene: Scene):
+        """把 `_rows()` 那几行分成三层：主角 / 指标格 / 小字条。
+
+        "窗外"那一行是主角（此刻真正在下什么）；点了能跳到某一刻的（太阳、
+        日出、日落、月亮）做成指标格；其余的（风、湿度…）归小字条那一排。
+        这样分类，加一行新的事实只要给它一个 action，自己就会落到该去的位置。
+
+        注意第三层实际画的是 `_info_chips()` 那一份（它比 `_rows` 多几样接口
+        给的读数，比如紫外线与气压），`rest` 只是"哪些行归这一层"的分类结果。
+        """
+        rows = self._rows(scene)
+        hero = next((r for r in rows if r.label == "窗外"), None)
+        grid = [r for r in rows if r is not hero and r.action == "open"]
+        rest = [r for r in rows if r is not hero and r.action != "open"]
+        rest = [r for r in rest if r.action == "detail"] or rest
+        return rows, hero, grid, rest
+
+    @staticmethod
+    def _info_chips(scene: Scene) -> list:
+        """一排小字条：那些"看一眼就好"的读数（体感 / 湿度 / 风 / 能见度…）。
+
+        这一排是**卡片上的第三层**：字号最小、颜色最淡——它重要，但不是最重要的。
+        有哪几项就显示哪几项（数据没回来就不写），没联网的时候整排不出现。
+        体感与今日高低温归主角那一块（见 _hero_sub），这里不重复。
+        """
+        out: list[tuple[str, str]] = []
+        if not scene.has_weather:
+            return out
+        if not scene.weather_now:
+            # 看的是别的日子：逐小时表里只有云、天气、气温、降水
+            out.append(("云量", f"{scene.cloud:.0f}%"))
+            if scene.precip_kind != "none":
+                out.append(("降水", f"{scene.precip_mm:.1f} mm/时"))
+            return out
+        out.append(("湿度", f"{scene.humidity:.0f}%"))
+        if scene.wind_speed:
+            out.append(("风", f"{compass(scene.wind_dir)} "
+                             f"{scene.wind_speed:.1f} km/h"))
+        if scene.precip_kind != "none" or scene.precip_mm > 0:
+            out.append(("降水", f"{scene.precip_mm:.1f} mm/时"))
+        if scene.visibility:
+            out.append(("能见度", f"{scene.visibility / 1000:.1f} km"))
+        if scene.uv is not None:
+            out.append(("紫外线", uv_text(scene.uv)))
+        if scene.pressure:
+            out.append(("气压", f"{scene.pressure:.0f} hPa"))
+        if scene.dew is not None:
+            out.append(("露点", f"{scene.dew:.0f}°"))
+        return out
+
+    @staticmethod
+    def _hero_sub(scene: Scene) -> str:
+        """主角那一块底下那行小字：体感 / 云量 / 今天的最高最低。"""
+        sub = [f"体感 {scene.apparent:.0f}°"]
+        if scene.weather_now:
+            sub.append(f"云量 {scene.cloud:.0f}%")
+        if (scene.temp_max is not None and scene.temp_min is not None
+                and scene.temp_max - scene.temp_min >= 1.0):
+            sub.append(f"今日 {scene.temp_min:.0f}° ~ {scene.temp_max:.0f}°")
+        return "　·　".join(sub)
+
+    @staticmethod
+    def _chip_rows(chips: list, room: float, scale: float) -> list:
+        """把小字条按宽度折行（放不下就换一行，不做等宽格子）。
+
+        等宽三列会把"风 西南 12.4 km/h"挤成两截；按文字宽度贪心排，
+        一行能放两个就放两个、能放三个就放三个。
+        """
+        rows: list[list[tuple[str, str, float]]] = []
+        line: list[tuple[str, str, float]] = []
+        used = 0.0
+        gap = 6 * scale
+        for label, value in chips:
+            w = (len(label) * 1.05 + len(value) * 0.62 + 2.4) * 11.0 * scale * 0.92
+            if line and used + gap + w > room:
+                rows.append(line)
+                line, used = [], 0.0
+            line.append((label, value, w))
+            used += (gap if len(line) > 1 else 0.0) + w
+        if line:
+            rows.append(line)
+        return rows
 
     def _paint_info(self, cr, scene: Scene, x: float, y: float, L: dict) -> list:
         """真正下笔的那一遍：画在离屏图上，返回这张卡上所有能点的方块。"""
         scale, pad, card_w, card_h = L["scale"], L["pad"], L["card_w"], L["card_h"]
         rows, compact = L["rows"], L["compact"]
+        hero, grid = L["hero"], L["grid"]
+        chip_rows, chip_line_h = L["chip_rows"], L["chip_line_h"]
+        chip_gap, hero_h = L["chip_gap"], L["hero_h"]
+        cell_h, grid_lines, grid_h = L["cell_h"], L["grid_lines"], L["grid_h"]
         hint_lines = L["hint_lines"]
         sunr, suns, show_arc = L["sunr"], L["suns"], L["show_arc"]
         head_h, time_h, arc_h = L["head_h"], L["time_h"], L["arc_h"]
-        div_h, row_h, hint_h = L["div_h"], L["row_h"], L["hint_h"]
+        div_h, hint_h = L["div_h"], L["hint_h"]
         accent = L["accent"]
         hover = self.ui.info_hover
         rects: list = []
@@ -2310,62 +2581,145 @@ class SkyPainter:
                 rects.append((ax0, ay - 7 * scale, aw, ah + 16 * scale, "arc", None))
             cy += arc_h
 
-        # ---- 一行行事实 ----
-        if not compact:
+        # ---- 主角：此刻的天气（这张卡上最大的那一块） ----
+        if not compact and hero is not None:
+            hy = cy
+            hh = hero_h - 8 * scale
+            hx = cx - 6 * scale
+            hw = card_w - pad * 2 + 12 * scale
+            idx = len(rects)
+            hovered = hover == idx
+            cr.set_source_rgba(1, 1, 1, 0.10 if hovered else 0.055)
+            rounded_rect(cr, hx, hy, hw, hh, 12 * scale)
+            cr.fill()
+            cr.set_source_rgba(accent[0] / 255, accent[1] / 255, accent[2] / 255,
+                               0.55 if hovered else 0.30)
+            rounded_rect(cr, hx, hy, 2.6 * scale, hh, 1.3 * scale)
+            cr.fill()
+
+            badge = 26 * scale
+            bcy = hy + hh * 0.42
+            draw_icon(cr, hero.icon, hx + 10 * scale + badge / 2, bcy,
+                      badge * 0.92, icon_tint(hero.icon), 0.95,
+                      phase=scene.moon_phase)
+            tx = hx + 10 * scale + badge + 9 * scale
+            if scene.has_weather:
+                # 大字温度 + 一句话天气（这两样是这张卡真正的主角）
+                vw, _ = draw_text(cr, f"{scene.temp:.0f}°", tx, hy + 8 * scale,
+                                  29 * scale, (255, 255, 255), 0.97,
+                                  weight=Pango.Weight.LIGHT)
+                what = scene.precip_label or scene.weather_text or hero.value
+                # 一句话天气与那行小字都排在温度的右边：温度是大字，底下再压一行
+                # 一定会撞上（1.1.13 第一版就是这样，字叠在一起）。
+                rx = tx + vw + 9 * scale
+                draw_text(cr, what, rx, hy + 14 * scale,
+                          13 * scale, (238, 242, 250), 0.86)
+                draw_text(cr, self._hero_sub(scene), rx, hy + hh - 16 * scale,
+                          10.5 * scale, (214, 224, 242), 0.60)
+            else:
+                # 没有天气：老实说为什么没有，别摆一个假的度数在那儿
+                draw_text(cr, hero.value, tx, hy + 12 * scale, 15 * scale,
+                          (238, 242, 250), 0.92, weight=Pango.Weight.MEDIUM)
+                if hero.note:
+                    draw_text(cr, hero.note, tx, hy + hh - 16 * scale,
+                              10.5 * scale, (214, 224, 242), 0.55)
+            if self.ui.info_buttons:
+                rects.append((hx, hy, hw, hh, "detail", None))
+            cy += hero_h
+
+        # ---- 指标格：太阳 / 日出 / 日落 / 月亮（两列，各是一个可以点过去的时刻）----
+        if not compact and grid:
             cr.set_source_rgba(1, 1, 1, 0.09)
-            cr.rectangle(cx, cy + 2 * scale, card_w - pad * 2, 1)
+            cr.rectangle(cx, cy + 1 * scale, card_w - pad * 2, 1)
             cr.fill()
             cy += div_h
-            for row in rows:
-                rx = cx - 5 * scale
-                rw2 = card_w - pad * 2 + 10 * scale
-                rh = row_h - 3 * scale
-                ry = cy - 2.5 * scale
+            gap = 8 * scale
+            cw = (card_w - pad * 2 - gap) / 2.0
+            for i, row in enumerate(grid):
+                col, line = i % 2, i // 2
+                gx = cx + col * (cw + gap)
+                gy = cy + line * cell_h
                 idx = len(rects)
                 hovered = hover == idx
+                rh = cell_h - 3 * scale
+                ry = gy - 1.5 * scale
                 if hovered:
                     cr.set_source_rgba(1, 1, 1, 0.10)
-                    rounded_rect(cr, rx, ry, rw2, rh, 8 * scale)
+                    rounded_rect(cr, gx - 3 * scale, ry, cw + 6 * scale, rh,
+                                 8 * scale)
                     cr.fill()
-                    cr.set_source_rgba(accent[0] / 255, accent[1] / 255,
-                                       accent[2] / 255, 0.9)
-                    rounded_rect(cr, rx, ry + 3 * scale, 2.2 * scale, rh - 6 * scale,
-                                 1.1 * scale)
-                    cr.fill()
-                badge = 20 * scale
-                bcx, bcy = rx + 5 * scale + badge / 2, cy + badge / 2 + 1 * scale
-                cr.set_source_rgba(1, 1, 1, 0.14 if hovered else 0.07)
+                badge = 17 * scale
+                bcx = gx + badge / 2
+                bcy = gy + badge / 2 + 2 * scale
+                cr.set_source_rgba(1, 1, 1, 0.13 if hovered else 0.06)
                 rounded_rect(cr, bcx - badge / 2, bcy - badge / 2, badge, badge,
                              badge * 0.34)
                 cr.fill()
-                draw_icon(cr, row.icon, bcx, bcy, badge * 0.70, icon_tint(row.icon),
+                draw_icon(cr, row.icon, bcx, bcy, badge * 0.68, icon_tint(row.icon),
                           0.95, phase=scene.moon_phase)
-                tx = rx + 5 * scale + badge + 9 * scale
-                draw_text(cr, row.label, tx, cy + 1 * scale, 12 * scale,
-                          (206, 214, 232), 0.56)
-                vx = tx + 40 * scale
-                vw, _ = draw_text(cr, row.value, vx, cy + 0.5 * scale, 13 * scale,
-                                  (240, 244, 252), 0.94)
+                tx = gx + badge + 7 * scale
+                draw_text(cr, row.label, tx, gy + 3 * scale, 11 * scale,
+                          (200, 209, 228), 0.52)
+                arrow = 12 * scale if self.ui.info_buttons else 0.0
+                vw, _ = draw_text(cr, row.value, 0, -1000, 13 * scale,
+                                  (255, 255, 255), 0.0)
+                vx = max(tx + 34 * scale, gx + cw - vw - arrow)
+                draw_text(cr, row.value, vx, gy + 0.5 * scale, 13 * scale,
+                          (240, 244, 252), 0.94)
                 if row.note:
-                    # 小窗口里装不下就别硬挤：副值整条不画，也不截半句
-                    nw, _ = draw_text(cr, row.note, 0, -1000, 11.5 * scale,
+                    # 副值要同时让开右边的数值与那颗小箭头：装不下就整条不写，
+                    # 也不截半句（1.1.13 第一版这里和数值叠在一起过）
+                    nw, _ = draw_text(cr, row.note, 0, -1000, 10.5 * scale,
                                       (255, 255, 255), 0.0)
-                    # 右边那条"点了能跳过去"的小箭头也要留出位置（壁纸上没有它）
-                    room = scale * (18 if (row.action == "open"
-                                           and self.ui.info_buttons) else 10)
-                    if vx + vw + 7 * scale + nw <= rx + rw2 - room:
-                        draw_text(cr, row.note, vx + vw + 7 * scale,
-                                  cy + 2.5 * scale, 11.5 * scale,
-                                  (214, 222, 238), 0.5)
-                if row.action == "open":
-                    # 那颗小箭头是"点了能跳过去"的意思；壁纸上没有鼠标，不画
-                    if self.ui.info_buttons:
-                        draw_icon(cr, "chevron-right", rx + rw2 - 9 * scale,
-                                  cy + badge / 2 + 1 * scale, 12 * scale,
-                                  (236, 241, 252), 0.32)
+                    if tx + nw + 6 * scale <= vx - 4 * scale:
+                        draw_text(cr, row.note, tx, gy + 15 * scale, 10.5 * scale,
+                                  (206, 216, 234), 0.46)
                 if self.ui.info_buttons:
-                    rects.append((rx, ry, rw2, rh, row.action, row.when))
-                cy += row_h
+                    draw_icon(cr, "chevron-right", gx + cw - 6 * scale,
+                              gy + badge / 2 + 2 * scale, 11 * scale,
+                              (236, 241, 252), 0.30)
+                    rects.append((gx - 3 * scale, ry, cw + 6 * scale, rh,
+                                  row.action, row.when))
+            if grid_lines > 1:                # 两行之间那一条横线
+                my = cy + cell_h - 2 * scale
+                cr.set_source_rgba(1, 1, 1, 0.06)
+                cr.rectangle(cx, my, card_w - pad * 2, 1)
+                cr.fill()
+            cy += grid_h
+
+        # ---- 小字条：体感 / 湿度 / 风 / 能见度…（第三层，最小最淡）----
+        if not compact and chip_rows:
+            cy += 6 * scale
+            for line in chip_rows:
+                xoff = cx
+                for label, value, w in line:
+                    pill_w = w
+                    idx = len(rects)
+                    hovered = hover == idx
+                    pill_h = chip_line_h - 3 * scale
+                    cr.set_source_rgba(1, 1, 1, 0.11 if hovered else 0.045)
+                    rounded_rect(cr, xoff, cy, pill_w, pill_h, pill_h / 2)
+                    cr.fill()
+                    if hovered:            # 停上去：左边压一道天色，说明"能点"
+                        cr.set_source_rgba(accent[0] / 255, accent[1] / 255,
+                                           accent[2] / 255, 0.85)
+                        rounded_rect(cr, xoff + 1.5 * scale, cy + 2 * scale,
+                                     2.0 * scale, pill_h - 4 * scale,
+                                     1.0 * scale)
+                        cr.fill()
+                    lw, _ = draw_text(cr, label, xoff + 6 * scale,
+                                      cy + 2.2 * scale, 10.5 * scale,
+                                      (214, 223, 240) if hovered else (198, 208, 228),
+                                      0.66 if hovered else 0.52)
+                    draw_text(cr, value, xoff + 6 * scale + lw + 4 * scale,
+                              cy + 2.2 * scale, 10.5 * scale,
+                              (244, 248, 255) if hovered else (232, 238, 250),
+                              0.94 if hovered else 0.80)
+                    if self.ui.info_buttons:
+                        rects.append((xoff, cy, pill_w, pill_h, "detail", None))
+                    xoff += pill_w + chip_gap
+                cy += chip_line_h + chip_gap
+            cy -= chip_gap - 2 * scale
 
         # ---- 一句人话 ----
         cy += 4 * scale
@@ -2449,20 +2803,40 @@ class SkyPainter:
         text = ui.toast + ("　·　详情" if ui.toast_detail else "")
         tw, th = draw_text(cr, text, 0, -1000, size, (255, 255, 255), 0.0)
         icon = ui.toast_icon or "info"
+        tint = {"check": (150, 226, 168), "warn": (255, 198, 120),
+                "refresh": (176, 208, 240)}.get(icon, (196, 212, 244))
+        # 这条提示还会停留多久：末尾那根细线一直在缩短。以前它只是"过一会儿
+        # 自己消失"，看的人不知道还要等多久（长提示更容易被当成卡住了）。
+        span = getattr(ui, "toast_span", 0.0) or 0.0
+        left = clamp(remain / span, 0.0, 1.0) if span > 0.4 else 1.0
         bw, bh = tw + 34 + size * 1.7, th + 18
         bx = w / 2 - bw / 2
         by = SILL_Y * h - bh - 22
         cr.set_source_rgba(0.05, 0.06, 0.10, 0.70 * alpha)
         rounded_rect(cr, bx, by, bw, bh, bh / 2)
         cr.fill()
+        # 左边一道与图标同色的窄边：一眼看出这是"成了 / 出问题了 / 正在做"
+        cr.save()
+        rounded_rect(cr, bx, by, bw, bh, bh / 2)
+        cr.clip()
+        cr.set_source_rgba(tint[0] / 255, tint[1] / 255, tint[2] / 255,
+                           0.30 * alpha)
+        rounded_rect(cr, bx, by, bh * 0.42, bh, bh * 0.2)
+        cr.fill()
+        if left < 1.0:                      # 将要消失的那一条细线
+            cr.set_source_rgba(tint[0] / 255, tint[1] / 255, tint[2] / 255,
+                               0.30 * alpha)
+            cr.rectangle(bx + bh * 0.42, by + bh - 2.0,
+                         (bw - bh * 0.42) * left, 1.6)
+            cr.fill()
+        cr.restore()
         cr.set_source_rgba(1, 1, 1, 0.12 * alpha)
         rounded_rect(cr, bx, by, bw, bh, bh / 2)
         cr.set_line_width(1)
         cr.stroke()
-        tint = {"check": (150, 226, 168), "warn": (255, 198, 120),
-                "refresh": (176, 208, 240)}.get(icon, (196, 212, 244))
-        draw_icon(cr, icon, bx + bh / 2 + 1, by + bh / 2, size * 0.95, tint,
-                  0.95 * alpha)
+        # 图标画成浅色：底色已经是它自己的颜色了，再用同色就看不出这枚图标
+        draw_icon(cr, icon, bx + bh / 2 + 1, by + bh / 2, size * 0.95,
+                  mix_rgb(tint, (255, 255, 255), 0.72), 0.95 * alpha)
         draw_text(cr, text, bx + bh / 2 + 6 + size * 0.85, by + 8, size,
                   (250, 251, 255), 0.95 * alpha)
         ui.toast_rect = (bx, by, bw, bh)

@@ -76,6 +76,14 @@ class WallpaperController:
         return info_compact_for(self.config.wallpaper_info_mode,
                                 bool(self.win.painter.ui.info_compact))
 
+    def scene_opts(self) -> dict:
+        """窗口里那一组"窗外画什么"的开关，交给壁纸那份画笔（见 config）。
+
+        不一起同步就会分叉：窗口里把行人和车收起来了，桌面上照样有人走。
+        """
+        return {field: bool(getattr(self.config, field, True))
+                for field, _label in cfgmod.SCENE_SWITCHES}
+
     def _render_target(self):
         """渲染用的一致性参数：地点、屏幕、天气（关掉天气时是 None）、底部余量。
 
@@ -141,7 +149,8 @@ class WallpaperController:
         self.worker.render_now(
             self.win.engine.local_now(), weather, show_info, show_ribbon, size, slot,
             lambda ok, msg, slot: self._done(ok, msg, slot, quiet),
-            adopt=adopt, weather_off=weather_off, compact=compact, inset=inset)
+            adopt=adopt, weather_off=weather_off, compact=compact, inset=inset,
+            scene_opts=self.scene_opts())
         if not quiet:
             self.win.toast("正在把这扇窗挂到桌面上…", 2.0)
 
@@ -262,7 +271,8 @@ class WallpaperController:
         self.worker.render_day(self.win.engine.local_date(), weather,
                                show_info, show_ribbon, size, 96,
                                self._progress, self._day_done,
-                               weather_off=weather_off, compact=compact, inset=inset)
+                               weather_off=weather_off, compact=compact, inset=inset,
+                               scene_opts=self.scene_opts())
 
     def _progress(self, done: int, total: int) -> bool:
         self.win.painter.ui.toast = f"正在画今天的天色 {done}/{total}"

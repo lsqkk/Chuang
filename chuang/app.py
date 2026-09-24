@@ -79,6 +79,10 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.painter.ui.show_info = bool(self.config.show_info)
         self.painter.ui.show_ribbon = bool(self.config.show_ribbon)
         self.painter.ui.info_compact = bool(self.config.info_compact)
+        # 窗外画什么（菜单 → 场景）：配置里的值搬到画笔上，一处定义见
+        # config.SCENE_SWITCHES——加一项开关只改那一处。
+        for _field, _label in cfgmod.SCENE_SWITCHES:
+            setattr(self.painter.ui, _field, bool(getattr(self.config, _field, True)))
         # 信息卡上那些能点的东西（命中、跳过去看、摊开数据）住在 infocard.py
         self.info = factmod.InfoCard(self)
         # 键盘（空格 / C / R / 左右 / Home / Esc）与"焦点该在画面上"住在 keys.py
@@ -399,6 +403,45 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _act_city(self, *_):
         CityDialog(self, self._set_location, self.toast,
                    current=self.config.location).present()
+
+    # ------------------------------------------------------------------
+    # 场景：窗外画什么（菜单 → 场景）
+    # ------------------------------------------------------------------
+    def _scene_setter(self, field: str):
+        """`actions` 要的那颗处理器：`win._scene_setter("show_trees")`。"""
+        def set_it(want: bool) -> None:
+            self._set_scene_switch(field, want)
+        return set_it
+
+    def _set_scene_switch(self, field: str, want: bool, quiet: bool = False) -> None:
+        """把某一项场景开关写进配置、落到画笔上，并让画面重画。
+
+        配置、`painter.ui`、菜单里那个勾，三处必须是同一个值——只改其中一处的
+        老毛病就是"重启之后它又自己回来了"（信息卡那次就是这么坏的）。
+        """
+        setattr(self.config, field, bool(want))
+        setattr(self.painter.ui, field, bool(want))
+        act = self.lookup_action(field)
+        if act is not None and act.get_state() is not None:
+            act.set_state(GLib.Variant.new_boolean(bool(want)))
+        self.config.save()
+        self.area.queue_draw()
+        if not quiet:
+            label = dict(cfgmod.SCENE_SWITCHES).get(field, field)
+            self.toast(f"{label}·{'画出来了' if want else '收起来了'}", 2.0)
+
+    def _act_scene_all(self, *_):
+        """一键：窗外的世界全画出来（回到出厂那幅画）。"""
+        for field, _label in cfgmod.SCENE_SWITCHES:
+            self._set_scene_switch(field, True, quiet=True)
+        self.toast("窗外的世界都回来了", 2.4)
+
+    def _act_scene_sky(self, *_):
+        """一键：只看天空——街上的人、车、树、楼一起收起来。"""
+        for field in ("show_people", "show_traffic", "show_trees", "show_lamps",
+                      "show_planes", "show_skyline"):
+            self._set_scene_switch(field, False, quiet=True)
+        self.toast("街上收起来了 · 只剩天上那一片", 2.6)
 
     # ------------------------------------------------------------------
     # 桌面壁纸
@@ -835,6 +878,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.painter.ui.toast = text
         self.painter.ui.toast_icon = icon
         self.painter.ui.toast_until = _time.time() + seconds
+        self.painter.ui.toast_span = max(0.5, float(seconds))
         self.painter.ui.toast_detail = ""
         self.area.queue_draw()
 
@@ -844,6 +888,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.painter.ui.toast = text
         self.painter.ui.toast_icon = icon
         self.painter.ui.toast_until = _time.time() + seconds
+        self.painter.ui.toast_span = max(0.5, float(seconds))
         self.painter.ui.toast_detail = detail
         self.area.queue_draw()
 
@@ -865,7 +910,8 @@ class ChuangWindow(Adw.ApplicationWindow):
                        f"，不对的话：菜单 → 换一扇窗", 9.0)
         else:
             self.toast("空格 隐藏信息卡 · 点上面的日出/日落可以跳过去看 · "
-                       "拖底部长卷预览今天的天色", 9.0)
+                       "拖底部长卷预览今天的天色 · 菜单 → 场景 里能收起街上的车与人",
+                       9.0)
         self.config.save()
 
     def _on_close(self, *_):
