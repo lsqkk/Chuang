@@ -273,6 +273,22 @@ class TestInfoCardDrawing(unittest.TestCase):
         self.assertGreaterEqual(P.TEXT_FLOOR, 0.9,
                                 "字号下限太低——小窗口里会缩到看不清")
 
+    def test_small_text_beside_a_big_number_is_optically_centred(self):
+        """大字号旁边的小字：**按字面中线**对齐，不是共用基线。
+
+        共用基线时，27 磅温度的下缘压着 14 磅的"毛毛雨"，温度的字面中心会高出
+        小半行——用户对着截图说的"温度飘到顶上去了"就是这件事。而字号差不多时
+        共用基线才是对的（表格里的标题与数值），所以这条规则要有那个 1.6 倍门槛。
+        """
+        from chuang.render import optical_shift
+        base, big, small = 100.0, 27.0, 14.0
+        shifted = optical_shift(base, big, small)
+        self.assertNotEqual(shifted, base, "字号差一倍还共用基线，小字会掉下去")
+        self.assertAlmostEqual(shifted - 0.38 * small, base - 0.36 * big, places=6)
+        # 字号接近时不动（指标格里的"太阳 / 南 173°"就该共用基线）
+        self.assertEqual(optical_shift(base, 11.5, 10.5), base)
+        self.assertEqual(optical_shift(base, 14.5, 11.5), base)
+
     def test_the_card_always_fits_the_window(self):
         """卡片不许比窗口还高，命中方块也不许跑出画布。
 

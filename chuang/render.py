@@ -173,6 +173,20 @@ def draw_text_bl(cr, text, x, baseline, size, color, alpha=1.0,
                      size, color, alpha, weight, align)
 
 
+def optical_shift(big_baseline: float, big_size: float, small_size: float) -> float:
+    """小字跟在大字旁边时，它的基线该放在哪儿。
+
+    字号差不多（差不到 1.6 倍）时**共用基线**才是"齐"的；字号差得大时相反：
+    共用基线会让大字的下缘压住小字，小字看上去往下掉（用户对着截图说的
+    "温度飘到顶上去了 / 小字掉下去了"就是这一件事的两面）。
+    那就按**字面中线**对齐：大字中线的经验位置在 `基线 - 0.36 × 字号`，
+    小字中线在 `基线 - 0.38 × 字号`，两者相等即可解出小字的基线。
+    """
+    if big_size < small_size * 1.6:
+        return big_baseline
+    return big_baseline - 0.36 * big_size + 0.38 * small_size
+
+
 def rounded_rect(cr, x, y, w, h, r):
     r = min(r, w / 2, h / 2)
     cr.new_sub_path()
@@ -2380,7 +2394,7 @@ class SkyPainter:
         show_arc = bool(sunr and suns and suns > sunr) and not compact
         head_h = 30 * scale
         time_h = (32 if compact else 42) * scale
-        hero_h = 0.0 if compact else (56 * scale if hero is not None else 0.0)
+        hero_h = 0.0 if compact else (62 * scale if hero is not None else 0.0)
         arc_h = 30 * scale if show_arc else 0
         div_h = 12 * scale if not compact else 0
         # 指标格：标题与数值一行、副值一行。行距要留够——之前 33 太小，
@@ -2658,10 +2672,13 @@ class SkyPainter:
                              time_size, (255, 255, 255), 0.97,
                              weight=Pango.Weight.LIGHT)
         weekday = "一二三四五六日"[scene.when.weekday()]
-        # 日期与那句"白天/暮色"跟大字时间共用一条基线（视觉上是一条线）
+        # 日期那一行跟着大字时间走：字号差一倍以上，**按视觉中线对齐**才齐
+        # （共用基线的话大字的下缘压着小字，小字看着就往下掉）
         draw_text_bl(cr, f"{scene.when.month} 月 {scene.when.day} 日 · 周{weekday}"
                          f" · {scene.period_name}",
-                     cx + tw + 10 * scale, base_time, self.F_DATE * ts,
+                     cx + tw + 10 * scale,
+                     optical_shift(base_time, time_size, self.F_DATE * ts),
+                     self.F_DATE * ts,
                      (226, 232, 245), 0.60)
         cy += time_h
 
@@ -2738,35 +2755,45 @@ class SkyPainter:
             cr.fill()
 
             badge = 26 * scale
-            base_h1 = hy + 25 * scale            # 温度与一句话天气共用的基线
-            base_h2 = hy + hh - 8 * scale        # 底下那行小字的基线
-            if hero is not None and not hero.note and not scene.has_weather:
-                # 没有副行的时候（比如"未联网 · 仅天文模式"）：整块居中，
-                # 别让那行字和一个空荡荡的右半张板子一起吊在上边
-                base_h1 = hy + hh * 0.5 + 6 * scale
+            # 主角块的竖向节奏：**温度与右边那句天气按"字面中线"对齐**，不是按
+            # 基线对齐。共用基线时，27 磅的温度下缘对齐 14 磅的"毛毛雨"，温度的
+            # 字面中心会高出小半行——看上去就是"温度飘到顶上去了"（用户就是这么
+            # 说的）。所以：先算出右边那句话的基线，再把它往上挪半个行高差。
+            T = self.F_HERO_TEMP * ts
+            C = self.F_HERO_WHAT * ts
+            S = self.F_HERO_SUB * ts
+            pad_v = max(4 * scale, (hh - (0.36 * T + 1.73 * C + 0.22 * S)) / 2.0)
+            base_temp = hy + pad_v + 0.72 * T
+            base_what = optical_shift(base_temp, T, C)
+            base_sub = base_what + 1.35 * C
+            base_h1, base_h2 = base_temp, base_sub
             # 图标与文字的左边线跟下面的指标格**对齐**（都是 cx 起）
             draw_icon(cr, hero.icon, hx + 6 * scale + badge / 2,
-                      base_h1 - 10 * scale,
+                      base_temp - 0.36 * T,      # 图标对齐温度的视觉中线
                       badge * 0.92, icon_tint(hero.icon), 0.95,
                       phase=scene.moon_phase)
             tx = hx + 6 * scale + badge + 9 * scale
             if scene.has_weather:
-                # 大字温度 + 一句话天气（这两样是这张卡真正的主角）
+                # **两列**：左边温度，右边天气与那行小字。右边这一列钉在固定的 x 上
+                # ——以前它是"跟在温度后面 9 像素"，于是温度是 21° / 9° / -12°
+                # 时，右边那两行会跟着左右挪，看着就是"随手摆的、没对齐"。
+                temp_text = f"{scene.temp:.0f}°"
+                slot = max(66 * scale,
+                           self._text_w(temp_text, self.F_HERO_TEMP * ts))
+                rx = tx + slot + 10 * scale
                 vw, _ = draw_text_bl(cr, f"{scene.temp:.0f}°", tx, base_h1,
                                      self.F_HERO_TEMP * ts, (255, 255, 255), 0.97,
                                      weight=Pango.Weight.LIGHT)
                 what = scene.precip_label or scene.weather_text or hero.value
-                # 一句话天气与那行小字都排在温度的右边（同一基线，但字号小一档）
-                rx = tx + vw + 9 * scale
-                draw_text_bl(cr, what, rx, base_h1, self.F_HERO_WHAT * ts,
+                draw_text_bl(cr, what, rx, base_what, C,
                              (238, 242, 250), 0.88)
-                draw_text_bl(cr, self._hero_sub(scene), rx, base_h2,
-                             self.F_HERO_SUB * ts, (208, 219, 238), 0.62)
+                draw_text_bl(cr, self._hero_sub(scene), rx, base_sub, S,
+                             (208, 219, 238), 0.62)
             else:
                 # 没有天气：老实说为什么没有，别摆一个假的度数在那儿
                 # 整块垂直居中、副值跟在右边同一行上——这一段本来就是一句话，
                 # 拆成两行会让那块板子显得又空又吊。
-                base_h1 = hy + hh * 0.5 + 5 * scale
+                base_h1 = hy + hh * 0.5 + 0.36 * 15 * ts
                 vw, _ = draw_text_bl(cr, hero.value, tx, base_h1, 15 * ts,
                                      (238, 242, 250), 0.92,
                                      weight=Pango.Weight.MEDIUM)
