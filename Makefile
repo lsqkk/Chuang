@@ -30,7 +30,7 @@ test:
 	$(PY) -m unittest discover -s tests -t . -v
 
 check:
-	$(PY) -m py_compile chuang/*.py tools/*.py chuang-gui
+	$(PY) -m py_compile chuang/*.py chuang/*/*.py tools/*.py chuang-gui
 	$(PY) -m unittest discover -s tests -t .
 	$(PY) tools/snapshot.py /tmp/chuang-check.png 18:35 34.34 108.94
 	@echo "✓ 检查通过"

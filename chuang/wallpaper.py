@@ -417,7 +417,8 @@ class Worker:
         return self._busy
 
     def _az0(self) -> float:
-        return 180.0 if self.lat >= 0 else 0.0
+        from .scene import facing_azimuth
+        return facing_azimuth(self.lat)
 
     def render_now(self, when: datetime, weather, show_info: bool, show_ribbon: bool,
                    size: tuple[int, int], slot: int, done,

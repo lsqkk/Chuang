@@ -466,6 +466,12 @@ class TestInfoCardDrawing(unittest.TestCase):
                             self._card_pixels(when=today, weather=older),
                             "天气更新于的时间变了，卡片还停在旧的那一行上")
 
+    def test_the_cache_key_notices_a_fetch_in_flight(self):
+        """「正在问天气」也是看得见的差别：脚注换了说法、刷新图标压暗了。"""
+        self.assertNotEqual(self._card_pixels(weather=_weather()),
+                            self._card_pixels(weather=_weather(), weather_busy=True),
+                            "正在问天气的时候卡片没有重画")
+
     def test_the_wallpaper_card_has_no_buttons(self):
         """桌面壁纸上的那张卡没有鼠标：收起 / 刷新 / 每行的小箭头一概不画。
 
@@ -599,6 +605,22 @@ class TestCardFootLine(unittest.TestCase):
         self.assertTrue(scene.weather_stale)
         self.assertIn("上次", self.painter._foot_text(scene, self.cr, 400.0, 10.0))
 
+    def test_it_says_when_a_fetch_is_in_flight(self):
+        """"正在问一次真实的天气…"（1.2.0）。
+
+        按下 R 之后画面上必须有回声：以前那一秒里卡片一动不动，看着像没反应，
+        要等结果回来才知道刚才那一下到底有没有发出去（见 infocard.InfoCard）。
+        """
+        now = datetime.now(self.tz).replace(microsecond=0)
+        scene = self._scene(now, _weather_from(now.replace(hour=0)))
+        self.painter.ui.weather_busy = False
+        idle = self.painter._foot_text(scene, self.cr, 400.0, 10.0)
+        self.painter.ui.weather_busy = True
+        busy = self.painter._foot_text(scene, self.cr, 400.0, 10.0)
+        self.assertIn("正在问", busy)
+        self.assertNotIn("正在问", idle)
+        self.assertNotEqual(idle, busy)
+
 
 @unittest.skipUnless(HAS_STACK, "没有 pycairo / PyGObject，跳过")
 class TestIcons(unittest.TestCase):
@@ -646,6 +668,48 @@ class TestIcons(unittest.TestCase):
     def test_unknown_kind_does_not_explode(self):
         count, _ = self._lit("不认识的图标")
         self.assertGreater(count, 5)
+
+
+@unittest.skipUnless(HAS_STACK, "没有 pycairo / PyGObject，跳过")
+class TestRibbonHighlight(unittest.TestCase):
+    """鼠标停在哪一格，长卷上那一格就亮起来（1.2.0）。
+
+    以前悬停只有上面一条很细的竖线与一个提示框——整条长卷上"这是哪一格"得凑近
+    数刻度。现在那一格自己会亮（而且只亮那一格）。
+    """
+
+    W, H, SEED = 1000, 640, 21
+
+    def _draw(self, hover):
+        engine = _engine()
+        weather = _weather()
+        scene = engine.build(DAY, weather, location_label="西安 · 陕西省")
+        painter = SkyPainter(seed=self.SEED)
+        painter.ui.ribbon = engine.ribbon(DAY.replace(hour=0, minute=0), weather)
+        painter.ui.ribbon_surface = None
+        painter.ui.hover_dt = hover
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.W, self.H)
+        painter.draw(cairo.Context(surf), self.W, self.H, scene, 180.0)
+        return painter, bytes(surf.get_data()), surf.get_stride()
+
+    @staticmethod
+    def _brightness(buf, stride, x, y):
+        off = int(y) * stride + int(x) * 4
+        return buf[off] + buf[off + 1] + buf[off + 2]
+
+    def test_the_hovered_cell_is_lit_and_the_others_are_not(self):
+        painter, plain, stride = self._draw(None)
+        x0, y0, rw, rh = painter.ui.ribbon_rect
+        mid_y = y0 + rh / 2
+        _, lit, _ = self._draw(DAY.replace(hour=12, minute=0))
+        # 12:00 那一格（正中）该亮一些
+        self.assertGreater(self._brightness(lit, stride, x0 + rw * 0.5, mid_y),
+                           self._brightness(plain, stride, x0 + rw * 0.5, mid_y),
+                           "悬停的那一格没有亮起来")
+        # 别处（03:00 那一格）不该跟着变
+        self.assertEqual(self._brightness(lit, stride, x0 + rw * 0.125, mid_y),
+                         self._brightness(plain, stride, x0 + rw * 0.125, mid_y),
+                         "只悬停了一格，别的格也亮了")
 
 
 if __name__ == "__main__":

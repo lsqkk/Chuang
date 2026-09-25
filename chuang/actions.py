@@ -62,6 +62,7 @@ def build_menu(win) -> Gio.Menu:
         primary.append("跟随真实天气", "win.weather")
         primary.append("沉浸全屏", "win.fullscreen")
         primary.append("窗口置顶", "win.pin")
+        primary.append("把这扇窗存成图片…", "win.savepicture")
         menu.append_section(None, primary)
 
         # 二、场景：窗外画什么。每一项都是一个开关，再加两个"一键"。
@@ -215,6 +216,7 @@ def register_actions(win) -> None:
     add("authormain", win._act_author_main)
     add("installdeb", win.updater.act_install)
     add("gotodatetime", win._act_goto_datetime)
+    add("savepicture", win._act_savepicture)
     add("restart", win.updater.act_restart)
     add("quit", win._act_quit)
     add("about", win._act_about)

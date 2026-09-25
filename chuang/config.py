@@ -43,7 +43,8 @@ DEFAULT_FRAME_RATE = 60
 INFO_MODES = ("follow", "slim", "full")
 
 # 窗外"画什么"的开关（菜单 → 场景）。每一项都能单独关掉，也能一键回到全部。
-# 名字和渲染里的字段一一对应（render.UIState），改名字要两边一起改。
+# 名字和渲染里的字段一一对应（render/state.py 的 UIState、菜单里的动作名），
+# 改名字要三处一起改（`tests/test_project.py` 盯着动作名那一条）。
 SCENE_SWITCHES = (
     ("show_people", "行人"),
     ("show_traffic", "车辆"),

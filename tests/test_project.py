@@ -15,7 +15,8 @@ PKG = ROOT / "chuang"
 
 
 def _py_files() -> list[Path]:
-    return sorted(PKG.glob("*.py")) + sorted((ROOT / "tools").glob("*.py"))
+    # 递归：`chuang/render/` 这样的子包也要过同样的规矩（1.2.0 拆包之后加的）
+    return sorted(PKG.rglob("*.py")) + sorted((ROOT / "tools").glob("*.py"))
 
 
 def _dotted(node) -> str:
@@ -133,20 +134,67 @@ class TestSubprocessTimeouts(unittest.TestCase):
 
 
 class TestModuleLayout(unittest.TestCase):
-    """app.py 拆分之后，各管一摊；别又长回去（见 CHANGELOG 1.1.8）。"""
+    """app.py 拆分之后，各管一摊；别又长回去（见 CHANGELOG 1.1.8 与 1.2.0）。"""
 
     # 拆分后 app.py 从 2036 行降到 1000 上下；留一点余量，但别再长回去。
     APP_PY_LIMIT = 1100
+    # 其余任何**一个**模块也别超过这么多行。拆分不是"把大文件剪成两半"：
+    # 一个 800 行的模块和一个 1600 行的模块一样难改（1.2.0 把 3235 行的
+    # render.py 拆成 12 个模块，最长的两个是信息卡的排版与画法）。
+    MODULE_LIMIT = 700
+    # 只有"窗口本身"允许大一点：它管的是画面、心跳、动作表与生命周期这一整套。
+    OVERSIZE_OK = {"app.py": "窗口本身（见 AGENTS §7）"}
 
     def test_app_py_stays_a_window(self):
         lines = (PKG / "app.py").read_text(encoding="utf-8").count("\n")
         self.assertLess(lines, self.APP_PY_LIMIT,
                         f"app.py 又长到 {lines} 行了——该拆的拆出去")
 
+    def test_no_module_is_a_monolith(self):
+        fat = []
+        for path in _py_files():
+            if path.parent != PKG:          # 只看 chuang/ 自己的模块
+                continue
+            if path.name in self.OVERSIZE_OK:
+                continue
+            lines = path.read_text(encoding="utf-8").count("\n")
+            if lines > self.MODULE_LIMIT:
+                fat.append(f"{path.name}({lines})")
+        self.assertEqual(fat, [],
+                         f"这些模块太长了（>{self.MODULE_LIMIT} 行）：{fat}"
+                         "——按「一层管一件事」拆开，见 chuang/render/__init__.py")
+
     def test_split_modules_exist(self):
         for name in ("actions.py", "dialogs.py", "diagnostics.py",
-                     "update_ui.py", "wallpaper_ctl.py"):
+                     "update_ui.py", "wallpaper_ctl.py",
+                     # 1.2.0 从 app.py 收出来的那几摊
+                     "chrome.py", "pointer.py", "devhooks.py", "topmost.py",
+                     "about.py", "instance.py", "export.py"):
             self.assertTrue((PKG / name).exists(), f"少了 {name}")
+        for name in ("paint.py", "state.py", "weatherfx.py", "core.py", "sky.py",
+                     "ground.py", "sill.py", "ribbon.py", "card.py",
+                     "cardpaint.py", "notify.py", "painter.py"):
+            self.assertTrue((PKG / "render" / name).exists(),
+                            f"render/ 里少了 {name}")
+
+    def test_every_module_explains_itself(self):
+        """每个模块开头都有一段"我在管什么"。
+
+        这个项目里"为什么这么写"和代码一样重要（AGENTS.md 那些事故笔记就是这么来的）：
+        一个文件如果不先说清自己管哪一摊，下一个人只能靠猜——1.2.0 拆包时每个模块
+        开头都写了这一段，别让新加的模块漏掉。
+        """
+        missing = []
+        for path in _py_files():
+            if path.parent.parent != PKG and path.parent != PKG:
+                continue                       # tools/ 那几个小脚本不强制
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            head = tree.body[0] if tree.body else None
+            if not (isinstance(head, ast.Expr)
+                    and isinstance(head.value, ast.Constant)
+                    and isinstance(head.value.value, str)):
+                missing.append(str(path.relative_to(ROOT)))
+        self.assertEqual(missing, [], f"这些模块没有模块文档：{missing}")
 
 
 class TestMainThreadHops(unittest.TestCase):
@@ -232,6 +280,15 @@ class TestSelfAttributeCalls(unittest.TestCase):
     静态查一遍：类体里出现的 `self.xxx(...)`，xxx 必须在同一个类里有定义
     （def / 赋值 / 注解 / property）。继承来的、setattr 出来的会漏网，
     但那两类本来就不靠这条兜——漏网也只能放过，不会误报。
+
+    1.2.0 起还认**混入类**：`chuang/render/` 那几层就是拼出来的（`SkyPainter`
+    自己几乎没有方法，全在 `SkyLayer` / `GroundLayer` / `CardPaintLayer` … 里），
+    所以父类上有的名字也算数。父类只在"同一份文件里 import 进来、或者就地
+    定义"时才认——不然随便哪个同名方法都能把错字遮住，这条检查就白写了。
+
+    子类也要看：一层的画法常常由**子类**接上（`CardLayer._draw_info` 调的
+    `_paint_info` 就住在 `CardPaintLayer` 里），而 `self.clock` 这种成员是
+    `SkyPainter.__init__` 挂上的——两者都靠"谁继承了我"这一侧补齐。
     """
 
     IGNORED = {
@@ -243,9 +300,11 @@ class TestSelfAttributeCalls(unittest.TestCase):
         "set_title",
         "set_default_size", "set_size_request", "add_css_class", "get_surface",
         "lookup_action", "add_action", "activate", "props", "run", "quit",
+        "get_focus", "get_native", "list_actions", "update_property", "notify",
     }
 
-    def _defined_names(self, cls: ast.ClassDef) -> set:
+    @staticmethod
+    def _defined_names(cls: ast.ClassDef) -> set:
         names = set()
         for node in ast.walk(cls):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -264,12 +323,79 @@ class TestSelfAttributeCalls(unittest.TestCase):
                     names.add(target.attr)
         return names
 
+    def _scopes(self) -> tuple[dict, dict, dict]:
+        """全项目扫一遍：每个类"自己定义的名字 / 父类 / 在哪个文件"。
+
+        顺带记下每个文件里**看得见**的名字（自己定义的与 import 进来的），
+        以及"谁继承了谁"（反向的那张表）。
+        """
+        table: dict = {}
+        visible: dict[Path, set] = {}
+        children: dict[str, list] = {}
+        for path, src in _sources():
+            tree = ast.parse(src, filename=str(path))
+            seen_names: set = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    seen_names |= {a.asname or a.name for a in node.names}
+                elif isinstance(node, ast.Import):
+                    seen_names |= {a.asname or a.name.split(".")[0] for a in node.names}
+            for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+                seen_names.add(cls.name)
+                table[cls.name] = (self._defined_names(cls),
+                                   [_dotted(b) for b in cls.bases], path)
+                for base in cls.bases:
+                    children.setdefault(_dotted(base).split(".")[-1], []).append(
+                        cls.name)
+            visible[path] = seen_names
+        return table, visible, children
+
+    def _up(self, cls_name: str, table: dict, visible: dict,
+            seen: set | None = None) -> set:
+        """自己 + 混入进来的父类（递归）。"""
+        seen = set() if seen is None else seen
+        own, bases, path = table.get(cls_name, (set(), [], None))
+        out = set(own)
+        for base in bases:
+            short = base.split(".")[-1]
+            if not short or short in seen or short not in table:
+                continue
+            if short not in visible.get(path, set()):     # 没 import 进来，不算
+                continue
+            seen.add(short)
+            out |= self._up(short, table, visible, seen)
+        return out
+
+    def _down(self, cls_name: str, table: dict, children: dict,
+              seen: set | None = None) -> set:
+        """继承了这个类的那些类（只取它们**自己**定义的名字）。
+
+        一层的画法常由子类接上（`CardLayer._draw_info` 调的 `_paint_info` 就在
+        `CardPaintLayer` 里），而 `self.clock` 那种成员是最终那个
+        `SkyPainter.__init__` 挂上的——两者都在这一侧。
+        """
+        seen = set() if seen is None else seen
+        out: set = set()
+        for child in children.get(cls_name, []):
+            if child in seen:
+                continue
+            seen.add(child)
+            out |= table.get(child, (set(), [], None))[0]
+            out |= self._down(child, table, children, seen)
+        return out
+
+    def _all_names(self, cls_name: str, table: dict, visible: dict,
+                   children: dict) -> set:
+        return (self._up(cls_name, table, visible)
+                | self._down(cls_name, table, children))
+
     def test_every_self_call_exists(self):
+        table, visible, children = self._scopes()
         problems = []
         for path, src in _sources():
             tree = ast.parse(src, filename=str(path))
             for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-                defined = self._defined_names(cls)
+                defined = self._all_names(cls.name, table, visible, children)
                 for node in ast.walk(cls):
                     if not isinstance(node, ast.Call):
                         continue
@@ -284,6 +410,58 @@ class TestSelfAttributeCalls(unittest.TestCase):
                         continue
                     problems.append(f"{path.name}:{node.lineno} {cls.name}.self.{func.attr}()")
         self.assertEqual(problems, [], f"调了不存在的方法：{problems}")
+
+
+class TestWindowCollaboratorCalls(unittest.TestCase):
+    """协作者（keys / pointer / infocard / chrome / wallpaper_ctl / update_ui …）
+    都拿着一个窗口，通过 `win.xxx()` 调它。
+
+    这跟"`self.xxx()` 打错一个字母"是完全同源的一种死法：**名字对不上就静默
+    什么都不做**，而且往往只在某一条路上才炸（AGENTS §3.2 里那两颗按钮就是
+    这么坏的）。所以这里也静态查一遍：`win.xxx(...)` 里的 xxx 必须是
+    `ChuangWindow` / `ChuangApp` 上真的有的方法（或 GTK 基类给的那些）。
+
+    只查**直接调用**（`win.toast(...)`）：`win.weather.refresh(...)` 这种经过
+    某个成员的链不归这条管。
+    """
+
+    IGNORED = TestSelfAttributeCalls.IGNORED
+
+    @staticmethod
+    def _window_names() -> set:
+        src = (PKG / "app.py").read_text(encoding="utf-8")
+        names: set = set()
+        for cls in [n for n in ast.walk(ast.parse(src))
+                    if isinstance(n, ast.ClassDef)]:
+            if cls.name in ("ChuangWindow", "ChuangApp"):
+                names |= TestSelfAttributeCalls._defined_names(cls)
+        return names
+
+    def test_every_window_call_exists(self):
+        names = self._window_names()
+        self.assertIn("toast", names)          # 兜一句：别把这张表扫空了
+        problems = []
+        for path, src in _sources():
+            for node in ast.walk(ast.parse(src, filename=str(path))):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not isinstance(func, ast.Attribute) or not func.attr:
+                    continue
+                value = func.value
+                is_win = (
+                    (isinstance(value, ast.Name) and value.id == "win")
+                    or (isinstance(value, ast.Attribute) and value.attr == "win"
+                        and isinstance(value.value, ast.Name)
+                        and value.value.id == "self"))
+                if not is_win:
+                    continue
+                if func.attr in names or func.attr in self.IGNORED:
+                    continue
+                if func.attr.startswith("__"):
+                    continue
+                problems.append(f"{path.name}:{node.lineno} win.{func.attr}()")
+        self.assertEqual(problems, [], f"窗口上没有这些方法：{problems}")
 
 
 if __name__ == "__main__":

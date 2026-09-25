@@ -9,6 +9,13 @@ from pathlib import Path
 from unittest import mock
 
 from chuang import weather as W
+# 拆成包之后，各处要**打在名字真正住的地方**：`CACHE` 与那份数据的读写住
+# 在 model.py，网络在 net.py，后台服务在 service.py。打在门面上是打不中的
+# （`from .net import fetch` 是把函数对象绑到 service 里），于是假数据进不来、
+# 真网络溜出去——1.2.0 拆包时踩过这一脚。
+from chuang.weather import model as Wmodel
+from chuang.weather import net as Wnet
+from chuang.weather import service as Wsvc
 from chuang.scene import SkyEngine
 
 # 在**主线程里先**把 GLib 导进来：Gi 的类型包装不是线程安全的，等后台抓取
@@ -23,10 +30,10 @@ except Exception:                       # noqa: BLE001 - 没有 PyGObject 就跳
 
 def _fake_service(tmp: Path, *, enabled: bool = True):
     """一个有缓存、但不会联网的 WeatherService。"""
-    with mock.patch.object(W, "CACHE", tmp / "weather.json"):
+    with mock.patch.object(Wmodel, "CACHE", tmp / "weather.json"):
         W.save_cache(W.Weather(ok=True, fetched_at=1e9, cloud=95.0, code=63,
                                temp=18.0, wind_speed=9.0, humidity=80.0))
-        with mock.patch.object(W, "CACHE", tmp / "weather.json"):
+        with mock.patch.object(Wmodel, "CACHE", tmp / "weather.json"):
             svc = W.WeatherService(lambda _w: None)
     svc.enabled = enabled
     svc.allow_fetch = False
@@ -67,7 +74,7 @@ def _pump_glib(predicate, timeout: float = 5.0) -> bool:
 def _service_with_days(tmp: Path, days: int, today: date):
     """缓存里有 today 起 days 天逐小时数据的服务（不联网）。"""
     p = tmp / "weather.json"
-    with mock.patch.object(W, "CACHE", p):
+    with mock.patch.object(Wmodel, "CACHE", p):
         W.save_cache(_weather_days(today, days))
         svc = W.WeatherService(lambda _w: None)
     svc.allow_fetch = True
@@ -108,7 +115,7 @@ class TestEffective(unittest.TestCase):
     def test_disabled_does_not_fetch(self):
         with tempfile.TemporaryDirectory() as d:
             svc = _fake_service(Path(d), enabled=False)
-            with mock.patch.object(W, "fetch") as fetch:
+            with mock.patch.object(Wsvc, "fetch") as fetch:
                 svc.refresh(force=True)
                 svc.maybe_refresh()
                 fetch.assert_not_called()
@@ -157,7 +164,7 @@ class TestWeatherData(unittest.TestCase):
 
     def test_roundtrip_serialization(self):
         w = W.Weather(ok=True, code=95, cloud=88.0, precip=3.0, hourly=self._hourly())
-        back = W._deserialize(W._serialize(w))
+        back = Wmodel._deserialize(Wmodel._serialize(w))
         self.assertEqual(back.code, 95)
         self.assertEqual(back.kind, "rain")
         self.assertEqual(len(back.hourly), 24)
@@ -167,10 +174,10 @@ class TestWeatherData(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "weather.json"
             p.write_text("{ 这不是 JSON", encoding="utf-8")
-            with mock.patch.object(W, "CACHE", p):
+            with mock.patch.object(Wmodel, "CACHE", p):
                 self.assertIsNone(W.load_cache())
             p.write_text(json.dumps({"code": "??"}), encoding="utf-8")
-            with mock.patch.object(W, "CACHE", p):
+            with mock.patch.object(Wmodel, "CACHE", p):
                 self.assertIsNone(W.load_cache())
 
     def test_precip_helpers(self):
@@ -277,7 +284,7 @@ class TestNearbyDays(unittest.TestCase):
             far = self.TODAY + timedelta(days=30)
             self.assertFalse(svc.ensure_day(far), "30 天以外问也白问")
             self.assertEqual(calls, [])
-            with mock.patch.object(W, "fetch", side_effect=fake_fetch):
+            with mock.patch.object(Wsvc, "fetch", side_effect=fake_fetch):
                 want = self.TODAY + timedelta(days=4)
                 self.assertTrue(svc.ensure_day(want))
                 self.assertTrue(_pump_glib(lambda: len(calls) > 0), "没去问")
@@ -311,13 +318,13 @@ class TestNearbyDays(unittest.TestCase):
             svc = _service_with_days(Path(d), 2, self.TODAY)   # 表是西安的
             svc.lat, svc.lon = 52.52, 13.40                     # 窗已经挪到柏林
             asked = []
-            with mock.patch.object(W, "fetch",
+            with mock.patch.object(Wsvc, "fetch",
                                    side_effect=lambda *a, **k: asked.append(a)):
                 self.assertFalse(svc.ensure_day(self.TODAY + timedelta(days=5)))
             self.assertEqual(asked, [], "手里还是别的城的表，却按天补了一枪")
             # 等整表刷新回来（数据地点也对上了），按天补就该照常工作
             svc.weather = _weather_days(self.TODAY, 2, lat=52.52, lon=13.40)
-            with mock.patch.object(W, "fetch", side_effect=lambda *a, **k: asked.append(a)):
+            with mock.patch.object(Wsvc, "fetch", side_effect=lambda *a, **k: asked.append(a)):
                 self.assertTrue(svc.ensure_day(self.TODAY + timedelta(days=5)))
             self.assertEqual(len(asked), 1)
 
@@ -333,8 +340,8 @@ class TestNearbyDays(unittest.TestCase):
                 self.assertEqual(forecast_days, W.FORECAST_DAYS)
                 return _weather_days(self.TODAY, 2, cloud=55.0)
 
-            with mock.patch.object(W, "fetch", side_effect=fake_fetch), \
-                    mock.patch.object(W, "save_cache"):
+            with mock.patch.object(Wsvc, "fetch", side_effect=fake_fetch), \
+                    mock.patch.object(Wmodel, "save_cache"):
                 self.assertTrue(svc.refresh(force=True, done=got.append))
                 self.assertTrue(_pump_glib(lambda: bool(got)), "done 没有被调到")
             self.assertTrue(got[-1].ok)
@@ -359,8 +366,8 @@ class TestNearbyDays(unittest.TestCase):
                 return _weather_days(self.TODAY, 2, cloud=61.0)
 
             svc._busy = True                     # 假装上一枪还在飞
-            with mock.patch.object(W, "fetch", side_effect=fake_fetch), \
-                    mock.patch.object(W, "save_cache"):
+            with mock.patch.object(Wsvc, "fetch", side_effect=fake_fetch), \
+                    mock.patch.object(Wmodel, "save_cache"):
                 self.assertFalse(svc.refresh(force=True, done=got.append))
                 self.assertTrue(svc._wanted, "这一枪被吞了，没记下来")
                 svc._busy = False
@@ -381,7 +388,7 @@ class TestFetchRequest(unittest.TestCase):
             seen["url"] = url
             return {"current": {}, "hourly": {"time": []}}
 
-        with mock.patch.object(W, "_fetch_json", side_effect=fake_json):
+        with mock.patch.object(Wnet, "_fetch_json", side_effect=fake_json):
             W.fetch(34.34, 108.94, "Asia/Shanghai")
             self.assertIn(f"forecast_days={W.FORECAST_DAYS}", seen["url"])
             self.assertNotIn("start_date", seen["url"])
@@ -428,7 +435,7 @@ class TestExtraReadings(unittest.TestCase):
     }
 
     def _fetch(self):
-        with mock.patch.object(W, "_fetch_json", return_value=self.RAW):
+        with mock.patch.object(Wnet, "_fetch_json", return_value=self.RAW):
             return W.fetch(34.34, 108.94, "Asia/Shanghai")
 
     def test_the_request_asks_for_them(self):
@@ -438,7 +445,7 @@ class TestExtraReadings(unittest.TestCase):
             seen["url"] = url
             return self.RAW
 
-        with mock.patch.object(W, "_fetch_json", side_effect=fake):
+        with mock.patch.object(Wnet, "_fetch_json", side_effect=fake):
             W.fetch(34.34, 108.94, "Asia/Shanghai")
         for field in ("dew_point_2m", "pressure_msl", "uv_index",
                       "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
@@ -479,7 +486,7 @@ class TestExtraReadings(unittest.TestCase):
 
     def test_cache_roundtrip_keeps_them(self):
         w = self._fetch()
-        back = W._deserialize(W._serialize(w))
+        back = Wmodel._deserialize(Wmodel._serialize(w))
         self.assertAlmostEqual(back.dew, 8.4)
         self.assertAlmostEqual(back.pressure, 1012.3)
         self.assertAlmostEqual(back.cloud_mid, 20.0)
@@ -491,7 +498,7 @@ class TestExtraReadings(unittest.TestCase):
         """老缓存的行只有 5-7 列：读得进来，缺的那几样就是默认值。"""
         old = {"fetched_at": 1e9, "code": 63, "cloud": 95.0, "temp": 18.0,
                "hourly": [["2026-09-24T00:00:00", 95.0, 63, 18.0, 60.0]]}
-        w = W._deserialize(old)
+        w = Wmodel._deserialize(old)
         self.assertEqual(len(w.hourly), 1)
         self.assertIsNone(w.hourly[0].uv)
         self.assertIsNone(w.dew)

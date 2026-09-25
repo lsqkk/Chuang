@@ -151,6 +151,7 @@ SAFE_TO_ACTIVATE = {
     "win.autostarthidden": None,
     "win.show": None,
     "win.gotodatetime": None,      # 打开"跳到某天某时"对话框
+    "win.savepicture": None,       # 只往这次测试的一次性 HOME 里写一张 PNG
     "win.city": None,              # 打开"换一扇窗"对话框
     "win.about": None,
     "win.wallpaperdiag": None,     # 只是把诊断文本摊进一个可复制的窗口
@@ -249,13 +250,18 @@ def main() -> int:
 
     # 从这里开始天气那一路就不联网了：窗口一起来那次抓取、按 R、换城市……
     # 全都走假数据。真请求没法变成"等它落地"的确定性，只会随机盖数据（见上）。
-    import chuang.weather as wmod
-    net_patch = mock.patch.object(wmod, "fetch", side_effect=fake_fetch)
+    # 注意**打在名字真正住的地方**：1.2.0 把 weather 拆成包之后，"去问一次"
+    # 是 service.py 里那个 `fetch`、真正的网络出口是 net.py 的 `_fetch_json`。
+    # 打在 `chuang.weather` 这个门面上是打不中的（Python 的 import 是把函数
+    # 对象绑到用它的那个模块里），那样假数据进不来、真网络溜出去。
+    from chuang.weather import net as wnet
+    from chuang.weather import service as wsvc
+    net_patch = mock.patch.object(wsvc, "fetch", side_effect=fake_fetch)
     net_patch.start()
     atexit.register(net_patch.stop)
     # 最底下那道口子也记一笔：报告里要能看到"天气这一路一次真网络都没发出去"
     raw_calls: list = []
-    raw_patch = mock.patch.object(wmod, "_fetch_json",
+    raw_patch = mock.patch.object(wnet, "_fetch_json",
                                   side_effect=lambda *a, **k: raw_calls.append(a) or {})
     raw_patch.start()
     atexit.register(raw_patch.stop)
@@ -611,6 +617,26 @@ def main() -> int:
         win.activate("framerate", GLib.Variant.new_string("60"))
         if win.config.frame_rate != 60:
             problems.append("画面流畅度改回 60 失败")
+
+        # 7d) 把这扇窗存成图片：只写进这次测试的一次性 HOME（`~/Pictures`），
+        #     画的就是刚才那一帧；同名的绝不覆盖。
+        win._act_savepicture()
+        shots = sorted((HOME / "Pictures").glob("*.png"))
+        results["saved_pictures"] = [p.name for p in shots]
+        if not shots:
+            problems.append("「存成图片」没有写出 PNG")
+        else:
+            last = shots[-1]
+            if last.stat().st_size < 20000:
+                problems.append(f"存出来的图太小了：{last.stat().st_size} 字节")
+            back = _cairo.ImageSurface.create_from_png(str(last))
+            results["saved_picture_size"] = [back.get_width(), back.get_height()]
+            if back.get_width() < 320 or back.get_height() < 260:
+                problems.append(f"存出来的图尺寸不对：{results['saved_picture_size']}")
+            win._act_savepicture()               # 再存一次：该换一个名字
+            again = sorted((HOME / "Pictures").glob("*.png"))
+            if len(again) != len(shots) + 1:
+                problems.append(f"再存一次没有换名字（{len(shots)} → {len(again)}）")
 
         # 8) 五个自绘对话框都得能建出来（GTK4.6 上没有 Adw 的新控件）
         try:

@@ -1,4 +1,14 @@
-"""窗 · Chuang —— GTK4 主程序。"""
+"""窗 · Chuang —— GTK4 主程序：窗口本身。
+
+这里是"窗口"：画面、心跳、动作表、生命周期。几摊子事已经各归各的模块——
+鼠标在 `pointer.py`、键盘在 `keys.py`、信息卡的交互在 `infocard.py`、壳（标题栏
+与控制器的接线）在 `chrome.py`、壁纸在 `wallpaper_ctl.py`、置顶那条 X11 的路在
+`topmost.py`、调试用的环境变量在 `devhooks.py`、单实例锁在 `instance.py`、
+「关于」那一组在 `about.py`、把这扇窗存成图片在 `export.py`。
+
+所以这个文件只该长"窗口自己的事"。`tests/test_project.py` 里有一条 1100 行的
+红线盯着它别再长回两千行（1.1.8 拆过一次，1.2.0 又收了一轮）。
+"""
 
 from __future__ import annotations
 
@@ -11,16 +21,22 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from . import APP_ID, __version__
+from . import about as aboutmod
 from . import actions
+from . import chrome
 from . import config as cfgmod
+from . import devhooks
 from . import diagnostics as diag
+from . import export as exportmod
 from . import frames as framemod
 from . import infocard as factmod
+from . import instance
 from . import keys as keymod
-from . import mainloop
+from . import pointer as pointermod
+from . import topmost as topmostmod
 from . import tray as traymod
 from . import update as upmod
 from . import update_ui as upd
@@ -28,25 +44,8 @@ from . import wallpaper as wallmod
 from . import wallpaper_ctl as wctl
 from .dialogs import CityDialog, CloseDialog, DetailDialog, TimeTravelDialog
 from .render import SkyPainter
-from .scene import SkyEngine, human_hint
+from .scene import SkyEngine, facing_azimuth, human_hint
 from .weather import WeatherService
-
-# 单实例锁：同一时刻只允许一个「窗」在写壁纸，避免两个进程互相覆盖
-INSTANCE_LOCK = Path.home() / ".cache" / "chuang" / "instance.lock"
-
-CSS = """
-window.chuang, .chuang-bg { background: #05070d; }
-headerbar {
-  background: rgba(9, 12, 20, 0.88);
-  box-shadow: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  min-height: 40px;
-}
-headerbar windowtitle { color: #eef2fb; }
-headerbar windowtitle:backdrop { color: #aab4c8; }
-headerbar button { color: #dfe6f5; }
-popover > contents { background: rgba(18, 22, 33, 0.97); }
-"""
 
 
 class ChuangWindow(Adw.ApplicationWindow):
@@ -67,10 +66,12 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._tick_errors = 0               # 心跳里兜住的异常次数
         self._last_tick_error = ""
         self._toggle_handlers = {}          # 勾选项名字 → 真正的处理器（便于"设为"某状态）
-        self._pin_ok = self._init_pin()
+        # 置顶那条 X11 的路（需要可选的 python3-xlib，见 topmost.py）
+        self.pin_ok = topmostmod.available()
+        self.topmost = topmostmod.Topmost(self)
         # 调试钩子：CHUANG_TIME=2026-09-23T18:40 / CHUANG_WEATHER=63:95:9:180
-        self._fake_time = self._parse_fake_time()
-        self._fake_weather = self._parse_fake_weather()
+        self._fake_time = devhooks.fake_time(self.engine, self.config)
+        self._fake_weather = devhooks.fake_weather(self.engine)
         self.add_css_class("chuang")
 
         self.set_default_size(self.config.window_w, self.config.window_h)
@@ -88,6 +89,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.info = factmod.InfoCard(self)
         # 键盘（空格 / C / R / 左右 / Home / Esc）与"焦点该在画面上"住在 keys.py
         self.keys = keymod.Keys(self)
+        # 鼠标（点卡片、拖长卷、滚轮）住在 pointer.py——和键盘是一对
+        self.pointer = pointermod.Pointer(self)
         # 重绘交给帧时钟（见 frames.FrameDriver）：帧率上限由 config.frame_rate 决定，
         # 菜单里可以按终端性能调（都得住在这儿，动作表里要引用它们）
         self.frames = framemod.FrameDriver(self)
@@ -99,7 +102,7 @@ class ChuangWindow(Adw.ApplicationWindow):
                                  seed=abs(hash(loc.name)) % 9973 + 11)
         self.wallpaper = wctl.WallpaperController(self, self.wp)
         self.updater = upd.UpdateController(self)
-        self._build_ui()
+        chrome.build(self)
         actions.register_actions(self)
         self._setup_tray()
 
@@ -124,179 +127,6 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.first_run_tips()
 
     # ------------------------------------------------------------------
-    # 调试钩子（正式使用不会用到）
-    # ------------------------------------------------------------------
-    def _parse_fake_time(self):
-        import os
-        from datetime import datetime
-        raw = os.environ.get("CHUANG_TIME")
-        if not raw:
-            return None
-        tz = self.engine._resolve_tz(self.config.location.timezone)
-        now = datetime.now(tz) if tz else datetime.now().astimezone()
-        try:
-            if "T" in raw:
-                dt = datetime.fromisoformat(raw)
-                return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt
-            hh, mm = (int(x) for x in raw.split(":")[:2])
-            return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        except ValueError:
-            return None
-
-    def _parse_fake_weather(self):
-        import os
-        from datetime import timedelta
-        from .weather import HourPoint, Weather
-        raw = os.environ.get("CHUANG_WEATHER")
-        if not raw:
-            return None
-        try:
-            parts = [float(x) for x in raw.split(":")]
-            code = int(parts[0])
-            cloud = parts[1] if len(parts) > 1 else 0.0
-            wind = parts[2] if len(parts) > 2 else 0.0
-            wdir = parts[3] if len(parts) > 3 else 0.0
-            streak = parts[4] if len(parts) > 4 else 0.0
-        except ValueError:
-            return None
-        w = Weather(ok=True, fetched_at=_time.time(), code=code, cloud=cloud,
-                    wind_speed=wind, wind_dir=wdir, temp=21.0, apparent=21.0,
-                    humidity=68.0, precip=streak, visibility=12000.0)
-        base = self.engine.local_date().replace(tzinfo=None)
-        for i in range(48):
-            w.hourly.append(HourPoint(base + timedelta(hours=i), cloud, code, 20.0, 40.0))
-        return w
-
-    # ------------------------------------------------------------------
-    def _init_pin(self) -> bool:
-        """GTK4 去掉了 keep-above，这里用 X11 的 _NET_WM_STATE_ABOVE 实现。"""
-        try:
-            import importlib.util
-            return importlib.util.find_spec("Xlib") is not None
-        except (ImportError, ValueError):
-            return False
-
-    def _set_above(self, above: bool) -> bool:
-        if not self._pin_ok:
-            return False
-        try:
-            from Xlib import X, display, protocol
-            d = display.Display()
-            xid = self._xid()
-            if not xid:
-                return False
-            win = d.create_resource_object("window", xid)
-            state_atom = d.intern_atom("_NET_WM_STATE")
-            source = 1        # 1 = 应用发起（EWMH 规范），WM 收到后会直接设置状态
-            data = [1 if above else 0, d.intern_atom("_NET_WM_STATE_ABOVE"), 0,
-                    source, 0]
-            event = protocol.event.ClientMessage(window=win, client_type=state_atom,
-                                                 data=(32, data))
-            d.screen().root.send_event(
-                event, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
-            d.flush()
-            d.close()
-            return True
-        except Exception:
-            return False
-
-    def _xid(self) -> int:
-        surf = self.get_surface()
-        try:
-            gi.require_version("GdkX11", "4.0")
-            from gi.repository import GdkX11
-            return GdkX11.X11Surface.get_xid(surf)  # type: ignore[attr-defined]
-        except Exception:
-            return 0
-
-    # ------------------------------------------------------------------
-    # 界面
-    # ------------------------------------------------------------------
-    def _build_ui(self):
-        self.area = Gtk.DrawingArea()
-        self.area.set_hexpand(True)
-        self.area.set_vexpand(True)
-        self.area.set_draw_func(self._on_draw)
-        self.area.set_focusable(True)
-        # 整幅画面都是 Cairo 位图，屏幕阅读器只能读到标题栏和菜单——
-        # 至少把"此刻的天气与天色"那句话（信息卡里那句人话）挂成可读的描述。
-        try:
-            self.area.update_property([Gtk.AccessibleProperty.LABEL],
-                                      ["窗外的天空"])
-        except Exception:
-            pass
-
-        motion = Gtk.EventControllerMotion()
-        motion.connect("motion", self._on_motion)
-        motion.connect("leave", self._on_leave)
-        self.area.add_controller(motion)
-
-        click = Gtk.GestureClick()
-        click.connect("pressed", self._on_press)
-        click.connect("released", self._on_release)
-        self.area.add_controller(click)
-
-        scroll = Gtk.EventControllerScroll()
-        scroll.set_flags(Gtk.EventControllerScrollFlags.VERTICAL)
-        scroll.connect("scroll", self._on_scroll)
-        self.area.add_controller(scroll)
-
-        # 快捷键接在窗口的**捕获阶段**上：事件自窗口往下走时就先被这里拿走，
-        # 焦点落在标题栏那颗"图钉"或菜单按钮上时，空格也不会被按钮当"激活"吃掉。
-        #
-        # 这里踩过的坑：GTK 4.6 上 ShortcutController 的 MANAGED / GLOBAL 作用域
-        # 对送到窗口的按键**不会触发**（实测只有 LOCAL 会），所以别用它来抢救
-        # 快捷键；老老实实用 EventControllerKey + 捕获阶段，并在开窗时把焦点交给
-        # 画面本身（否则默认焦点可能停在标题栏的按钮上，空格按下去像是在按按钮）。
-        keys = Gtk.EventControllerKey()
-        keys.connect("key-pressed", self.keys.on_key)
-        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        self.add_controller(keys)
-        self.connect("map", lambda *_: (self.area.grab_focus(), False)[1])
-        # 焦点会跑到"别的画布"上去（菜单弹层关掉之后最典型），见 keys.Keys
-        self.keys.attach_handlers()
-
-        self.title_widget = Adw.WindowTitle(title="窗", subtitle="")
-        header = Adw.HeaderBar()
-        header.set_title_widget(self.title_widget)
-
-        self.pin_button = Gtk.ToggleButton(icon_name="view-pin-symbolic",
-                                           tooltip_text="让这扇窗一直浮在最上面")
-        self.pin_button.set_active(self.config.always_on_top and self._pin_ok)
-        if not self._pin_ok:
-            self.pin_button.set_sensitive(False)
-            self.pin_button.set_tooltip_text("需要 python3-xlib 才能置顶")
-        self.pin_button.connect("toggled", self._on_pin_toggled)
-        # 鼠标点标题栏的按钮不该把键盘焦点从画面上抢走：
-        # 否则点过一次图钉，之后按空格就变成"再按一次图钉"，卡片反而不动了。
-        self.pin_button.set_focus_on_click(False)
-        header.pack_end(self.pin_button)
-
-        menu = actions.build_menu(self)
-        self.menu_model = menu
-        self.menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic",
-                                          menu_model=menu, tooltip_text="更多")
-        self.menu_button.set_focus_on_click(False)
-        # 菜单弹层关掉之后焦点会留在弹层里那颗小按钮上（见 keys.Keys.focus_canvas）
-        # 这一跳也得走 to_main：默认优先级的 idle 会被帧时钟饿死（见 mainloop.py）
-        mainloop.to_main(lambda: (self.keys.hook_menu_popover(self.menu_button),
-                                  False)[1])
-        header.pack_end(self.menu_button)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(header)
-        box.append(self.area)
-        self.set_content(box)
-
-        provider = Gtk.CssProvider()
-        provider.load_from_data(CSS.encode("utf-8"))
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-
-        if self.config.always_on_top and self._pin_ok:
-            GLib.timeout_add(400, lambda: (self._set_above(True), False)[1])
-
     def activate(self, name: str, target=None) -> bool:
         """稳妥地激活一个动作。
 
@@ -371,7 +201,7 @@ class ChuangWindow(Adw.ApplicationWindow):
             handler(value)
 
     def _act_pin(self, want: bool):
-        if want and not self._pin_ok:
+        if want and not self.pin_ok:
             self.toast("置顶需要先安装 python3-xlib")
             self.pin_button.set_active(False)
             return
@@ -379,7 +209,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.config.save()
         if self.pin_button.get_active() != want:
             self.pin_button.set_active(want)
-        self._set_above(want)
+        self.topmost.set_above(want)
         self.toast("已置顶，可以缩成一条小窗放在角落" if want else "取消置顶")
 
     def _act_weather(self, want: bool):
@@ -446,13 +276,13 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.toast("街上收起来了 · 只剩天上那一片", 2.6)
 
     # ------------------------------------------------------------------
-    # 桌面壁纸
+    # 桌面壁纸与诊断
     # ------------------------------------------------------------------
     def _diag_facts(self) -> "diag.Facts":
         """把诊断要用的事实抓一次——排版那件事归 diagnostics.py 管。"""
         return diag.Facts(
             version=__version__, pid=os.getpid(),
-            instance_held=bool(globals().get("_INSTANCE_HANDLE")),
+            instance_held=instance.held(),
             other_processes=diag.other_chuang_processes(),
             installed_deb=upmod.installed_deb_version(),
             tray_available=bool(self.tray is not None and self.tray.available),
@@ -476,10 +306,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         return diag.wallpaper_report(self._diag_facts())
 
     # ------------------------------------------------------------------
-    # 检查更新
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
-    # 关闭行为与托盘
+    # 关窗与托盘（「关于」那一组在 about.py，检查更新在 update_ui.py）
     # ------------------------------------------------------------------
     def _act_show(self, *_):
         self.set_visible(True)
@@ -561,50 +388,16 @@ class ChuangWindow(Adw.ApplicationWindow):
             cfgmod.set_autostart(True, self.app.installed_launcher(), hidden=want)
         self.toast("开机时直接进托盘，不弹窗" if want else "开机时正常打开窗口", 3.5)
 
+    # 「关于」那一组（关于窗 / 作者主页 / 问题反馈）住在 about.py，
+    # 这里只留转发——菜单里那三条动作名指着这几个方法（见 actions.register_actions）
     def _act_about(self, *_):
-        version_text = __version__
-        rel = self.updater.available_release
-        if rel is not None:
-            version_text = f"{__version__}（有新版本 {rel.tag}）"
-        about = Gtk.AboutDialog(
-            transient_for=self, modal=True,
-            program_name="窗 · Chuang", version=version_text,
-            logo_icon_name="chuang",
-            comments="把你头顶此刻真实的天空，搬到桌面的一扇窗里。\n\n"
-                     "太阳、月亮、星星的位置由本地天文算法计算，"
-                     "云、雨、雪来自 Open-Meteo 的真实天气。\n"
-                     "没有任何内容离开这台电脑。",
-            website=upmod.AUTHOR_URL,
-            website_label=f"{upmod.AUTHOR} · github.com/lsqkk",
-            authors=[f"{upmod.AUTHOR}（lsqkk）"],
-            copyright="© 2026 蓝色奇夸克",
-            license_type=Gtk.License.MIT_X11)
-        # 「有问题去这里说」的直达入口（GTK 4.6 才有的属性，取不到就算了）
-        try:
-            about.set_issue_url(upmod.ISSUES_URL)
-        except Exception:
-            pass
-        about.present()
+        aboutmod.show_about(self)
 
     def _act_author_main(self, *_):
-        self._open_url(upmod.AUTHOR_URL, "已经在浏览器里打开了作者的主页")
+        aboutmod.open_author(self)
 
     def _act_report_issue(self, *_):
-        """问题反馈：直接打开仓库的"新建 issue"页，并预填环境信息。
-
-        预填的内容只有版本号和系统环境，不含位置、不含任何个人数据——
-        用户看得见、也能自己删。
-        """
-        from urllib.parse import quote, urlencode
-        title = f"[Bug] {__version__} · "
-        body = (
-            "### 发生了什么\n\n（请把这句换成你看到的现象）\n\n"
-            "### 怎么复现\n\n1. \n2. \n\n"
-            "### 环境（自动填好，可删）\n\n" + self._diagnostics() + "\n"
-        )
-        url = upmod.NEW_ISSUE_URL + "?" + urlencode(
-            {"title": title, "body": body}, quote_via=quote)
-        self._open_url(url, "已经在浏览器里打开反馈页；把上面两句写清楚就好")
+        aboutmod.report_issue(self)
 
     def _diagnostics(self) -> str:
         return diag.environment_report(self._diag_facts())
@@ -636,7 +429,7 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.wallpaper.apply(quiet=True)
 
     # ------------------------------------------------------------------
-    # 场景与绘制
+    # 场景与绘制（一帧怎么来的）
     # ------------------------------------------------------------------
     def _weather_for_paint(self):
         """作画用的天气：关掉「跟随真实天气」时是 None（见 WeatherService.effective）。"""
@@ -720,9 +513,35 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _on_draw(self, _area, cr, w, h):
         scene = self._current_scene()
         self._refresh_ribbon(scene)
-        az0 = 180.0 if self.config.location.lat >= 0 else 0.0
-        self.painter.draw(cr, w, h, scene, az0)
+        self.painter.draw(cr, w, h, scene, self._az0())
         self.painter.draw_chip(cr, w, h)
+
+    def _az0(self) -> float:
+        """这扇窗朝哪边（北半球朝南）——和壁纸、导出的图片用的是同一个值。"""
+        return facing_azimuth(self.config.location.lat)
+
+    def _act_savepicture(self, *_):
+        """菜单 → 「把这扇窗存成图片…」：把此刻这一帧写进 ~/Pictures。
+
+        画的就是**你现在看到的这一帧**（同一个尺寸、预览时就是预览那一刻），
+        存在哪、叫什么名字都写在提示里——点一下提示条还能把完整路径复制走。
+        """
+        when = self.painter.ui.preview_dt or self._now()
+        scene = self._current_scene()
+        # 窗口还没被分配尺寸时（极少数情况）退回到默认大小，别存一张 0×0
+        w = int(self.get_width() or 0) or self.config.window_w
+        h = int(self.get_height() or 0) or self.config.window_h
+        path = exportmod.default_path(when)
+        try:
+            exportmod.save_png(self.painter, scene, w, h, path)
+        except Exception as exc:                     # noqa: BLE001 - 磁盘满 / 没权限
+            self.toast(f"没能写出图片：{exc}", 6.0, icon="warn")
+            return
+        self.toast_detailed(
+            f"存好了：{path.name}", 7.0,
+            f"这一帧存在：\n{path}\n\n{w}×{h}，和你此刻看到的一样。\n"
+            f"（{when:%Y-%m-%d %H:%M} · {scene.location_label or scene.location_name}）",
+            icon="check")
 
     def _tick(self):
         """定时心跳：重绘、刷新标题与壁纸、兜底自查。
@@ -743,8 +562,7 @@ class ChuangWindow(Adw.ApplicationWindow):
             return True
 
     def _tick_body(self) -> bool:
-        import time as _t
-        now = _t.monotonic()
+        now = _time.monotonic()
         clock = self._now()
         # 睡了一觉 / 系统时间被改 / 从挂起里醒来：墙钟会跳。这时候画面和
         # 壁纸上的"此刻"都还是旧的，立刻补一次，别等下一个周期。
@@ -774,102 +592,19 @@ class ChuangWindow(Adw.ApplicationWindow):
             self.weather.maybe_refresh()
         self.wallpaper.tick(now)
         self.frames.watchdog(now)             # 帧时钟万一没在走，兜底补一次重绘
+        # 卡片要看得见"正在问一次真实天气"（按下 R 之后不再是石沉大海，
+        # 见 infocard.InfoCard.refresh_weather）。这只是两个状态，进缓存键没问题。
+        busy = bool(self.weather.busy)
+        if busy != self.painter.ui.weather_busy:
+            self.painter.ui.weather_busy = busy
+            self.area.queue_draw()
         # 正在看的那一天（预览时是预览日）如果还没有真预报，就去补一次：
         # 拖动长卷时可能正忙、被限流跳过，心跳会接着把它补齐。
         self.weather.watch(self.painter.ui.preview_dt or clock)
         return True
 
     # ------------------------------------------------------------------
-    # 交互
-    # ------------------------------------------------------------------
-    def _over_ribbon(self, x, y) -> bool:
-        x0, y0, rw, rh = self.painter.ui.ribbon_rect
-        if rw <= 0:
-            return False
-        return x0 - 6 <= x <= x0 + rw + 6 and y0 - 22 <= y <= y0 + rh + 16
-
-    def _on_motion(self, _c, x, y):
-        ui = self.painter.ui
-        if self.is_active():
-            # 鼠标回到窗里 → 焦点也回到画面（"窗口在最前面但没有键盘"那种情况）
-            self.keys.focus_canvas()
-        if ui.dragging:
-            t = self.painter.ribbon_time_at(ui, x)
-            if t is not None:
-                self._set_preview(t)
-            return
-        changed = False
-        idx = self.info.hit(x, y)
-        if idx != ui.info_hover:
-            ui.info_hover = idx
-            changed = True
-        arc_dt = (self.info.arc_time(x)
-                  if 0 <= idx < len(ui.info_rects) and ui.info_rects[idx][4] == "arc"
-                  else None)
-        if arc_dt != ui.info_hover_dt:
-            ui.info_hover_dt = arc_dt
-            changed = True
-        over = self._over_ribbon(x, y)
-        self.area.set_cursor_from_name(
-            "pointer" if idx >= 0 else ("ew-resize" if over else None))
-        t = self.painter.ribbon_time_at(ui, x) if over else None
-        if t != ui.hover_dt:
-            ui.hover_dt = t
-            changed = True
-        if changed:
-            self.area.queue_draw()
-
-    def _on_leave(self, *_):
-        ui = self.painter.ui
-        ui.hover_dt = None
-        ui.info_hover = -1
-        ui.info_hover_dt = None
-        self.area.queue_draw()
-
-    def _on_press(self, gesture, _n, x, y):
-        ui = self.painter.ui
-        self.keys.focus_canvas()      # 手指点在画上，键盘也就该属于这幅画
-        tx, ty, tw, th = ui.toast_rect
-        if tw > 0 and tx <= x <= tx + tw and ty <= y <= ty + th:
-            if ui.toast_detail:
-                self._show_detail("详情", ui.toast_detail)
-            else:                       # 点一下就把这条提示收掉
-                ui.toast_until = 0.0
-                self.area.queue_draw()
-            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            return
-        idx = self.info.hit(x, y)
-        if idx >= 0:
-            self.info.activate(idx, x)
-            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            return
-        cx, cy, cw, ch = ui.chip_rect
-        if cw > 0 and cx <= x <= cx + cw and cy <= y <= cy + ch:
-            self._set_preview(None)
-            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            return
-        if self._over_ribbon(x, y):
-            ui.dragging = True
-            t = self.painter.ribbon_time_at(ui, x)
-            if t is not None:
-                self._set_preview(t)
-                ui.dragging = True          # _set_preview 会清掉拖动标记，这里补回来
-            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-
-    def _on_release(self, _g, _n, _x, _y):
-        self.painter.ui.dragging = False
-
-    def _on_scroll(self, _c, _dx, dy):
-        ui = self.painter.ui
-        if ui.preview_dt is None and ui.hover_dt is None:
-            return False
-        from datetime import timedelta
-        base = ui.preview_dt or ui.hover_dt or self._now()
-        step = 10 if dy > 0 else -10
-        self._set_preview(base + timedelta(minutes=step))
-        return True
-
-    # ------------------------------------------------------------------
+    # 提示条与第一次打开
     def _on_weather(self, weather):
         self._scene_key = None
         self._ribbon_key = None
@@ -1019,7 +754,7 @@ class ChuangApp(Adw.Application):
 
 
 def run(argv=None, force_city: bool = False) -> int:
-    if not _claim_single_instance():
+    if not instance.claim():
         print("「窗」已经在运行；这次只把原来那扇窗叫到了前面。", file=sys.stderr)
         return 0
     argv = list(argv or [])
@@ -1028,45 +763,3 @@ def run(argv=None, force_city: bool = False) -> int:
         argv.remove("--hidden")
     app = ChuangApp(force_city=force_city, hidden=hidden)
     return app.run(argv)
-
-
-def _claim_single_instance() -> bool:
-    """同一时刻只允许一个「窗」在写壁纸。
-
-    应用本身靠 D-Bus 保单例，但"两个写入方各自往 sky-a / sky-b 里交替写"
-    正是壁纸来回闪的根源之一（一张是"现在"，另一张还是上次那张旧图）。
-    这里再加一把进程间的文件锁兜底：拿不到锁就把已有实例叫到前台，然后退场。
-    """
-    import fcntl
-    deadline = _time.monotonic() + 1.5
-    while True:
-        try:
-            INSTANCE_LOCK.parent.mkdir(parents=True, exist_ok=True)
-            handle = open(INSTANCE_LOCK, "w")
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            # 锁跟着进程走：进程一退出内核就自动释放（锁文件留着也没关系）。
-            # 存进模块级变量，别让 handle 被回收——回收就等于解锁。
-            globals()["_INSTANCE_HANDLE"] = handle
-            return True
-        except OSError:
-            # 同一个会话里已经有一扇窗：把它叫到前台，自己退场
-            if _poke_running_instance():
-                return False
-            # 锁被"别的会话/正在退出的进程"占着：等一下再试；实在等不到就
-            # 照常启动（总比登录后什么都没有强，此时本会话里确实没有第二个）
-            if _time.monotonic() >= deadline:
-                return True
-            _time.sleep(0.15)
-
-
-def _poke_running_instance() -> bool:
-    """本会话里如果已经有「窗」在跑，就把它叫到前台。成功返回 True。"""
-    try:
-        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        path = "/" + APP_ID.replace(".", "/")
-        bus.call_sync(APP_ID, path, "org.freedesktop.Application", "Activate",
-                      GLib.Variant("(a{sv})", ({},)), None,
-                      Gio.DBusCallFlags.NONE, 1500, None)
-        return True
-    except Exception:
-        return False

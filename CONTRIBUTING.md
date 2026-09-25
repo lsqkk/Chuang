@@ -36,29 +36,45 @@ make test                                   # 跑自动化测试（只用标准�
 chuang/astronomy.py   本地天文计算（太阳 NOAA、月亮 Meeus、恒星、升落）
 chuang/palette.py     天色色板：太阳高度角 → 天顶色/地平色/辉光/环境光
 chuang/scene.py       时刻＋地点＋天气 → 一帧场景；今日天色长卷
-chuang/weather.py     Open-Meteo 客户端、缓存、离线降级
-chuang/render.py      Cairo 绘制（天空、云雨、剪影、街景、窗台、长卷、信息卡）
-chuang/street.py      行人与车辆（位置 = 时间的函数）
+chuang/weather/       真实天气（codes / model / net / service / const）
+chuang/render/        Cairo 绘制，按画面里的层分 12 个模块
+                      （paint / state / weatherfx / core / sky / ground / sill /
+                       ribbon / card + cardpaint / notify / painter）
+chuang/street/        街上的人与车（actors / people / vehicles / props /
+                      shadows / draw）
+chuang/city/          天际线（model 长出这座城 / draw 画出来）
 chuang/tray.py        托盘：KStatusNotifierItem + DBusMenu
 chuang/wallpaper.py   壁纸渲染线程与 GNOME 动态壁纸 XML
 chuang/wallpaper_ctl.py  桌面壁纸这一摊的调度（接管/跟随/动态/还原/诊断）
 chuang/update.py      检查更新（GitHub Releases，纯标准库）
 chuang/update_ui.py   下载 → 校验 → 安装 → 重启这条链路
 chuang/actions.py     菜单与动作注册（想加一个入口，就看这一个文件）
+chuang/infocard.py    「此刻的事实」上的交互（点行跳过去看 / 摊开天气）
+chuang/keys.py / pointer.py   键盘与鼠标
+chuang/chrome.py      窗口的壳：标题栏、画布、控制器接线、CSS
+chuang/frames.py      帧率与帧时钟驱动的重绘
+chuang/mainloop.py    后台线程 → 主线程的那一跳（to_main）
+chuang/export.py      「把这扇窗存成图片」
 chuang/dialogs.py     自绘的小窗口（换城市/跳到某一刻/详情/选择…）
 chuang/diagnostics.py 诊断文本（纯函数，没有 GTK 也能测）
+chuang/topmost.py / devhooks.py / about.py / instance.py
+                      置顶那条 X11 的路 / 调试环境变量 / 关于窗那一组 / 单实例锁
 chuang/app.py         窗口本身：画面、交互、心跳、托盘与生命周期
 tests/                自动化测试（含 gui_smoke.py：开窗才测得到的那部分）
 ```
 
-想改画风，基本都在 `palette.py`（颜色关键帧）与 `render.py`；想改天象，在 `astronomy.py`。
+想改画风，基本都在 `palette.py`（颜色关键帧）与 `render/`（先看 `paint.py` 那一层
+与 `painter.py` 的 `draw()`）；想改天象，在 `astronomy.py`。
 `app.py` 里只剩"窗口本身"——1.1.8 之前它有两千行、同时当菜单表、壁纸调度器、
-更新安装器与诊断器用；现在那些各自成文件，改动面小得多。
+更新安装器与诊断器用；1.2.0 又把壳、鼠标、置顶、单实例、关于窗各自请了出去
+（1072 → 811 行）。**任何一个模块超过 700 行就会让 `tests/test_project.py` 变红**
+——拆分不是"把大文件剪成两半"，800 行和 1600 行一样难改。
 
 ## 提交前的自检
 
 ```bash
-python3 -m py_compile chuang/*.py tools/*.py chuang-gui   # 至少先能编译
+python3 -m py_compile chuang/*.py chuang/*/*.py tools/*.py chuang-gui   # 至少先能编译
+python3 -m unittest tests.test_project                     # 包结构 / 名字 / 模块长度
 python3 tools/make_screenshots.py                          # 画风变了就更新截图
 ./packaging/build-deb.sh                                   # 打包是否仍然通过
 ```
