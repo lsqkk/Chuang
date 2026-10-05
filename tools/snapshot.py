@@ -17,12 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cairo  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 
+from chuang import i18n  # noqa: E402
 from chuang.render import SkyPainter  # noqa: E402
 from chuang.scene import SkyEngine  # noqa: E402
 from chuang.weather import HourPoint, Weather  # noqa: E402
 
 
 def main():
+    # 跟着环境里的语言走（CHUANG_LANG=en 就能出一张英文的图）
+    i18n.setup()
     out = sys.argv[1]
     clock = sys.argv[2]
     lat = float(sys.argv[3])

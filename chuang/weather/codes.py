@@ -12,23 +12,24 @@ from __future__ import annotations
 
 import math
 
+from ..i18n import N_, tr as _
 
 WMO_TEXT = {
-    0: "晴", 1: "大致晴朗", 2: "多云", 3: "阴",
-    45: "有雾", 48: "雾凇",
-    51: "细微毛毛雨", 53: "毛毛雨", 55: "密毛毛雨",
-    56: "冻毛毛雨", 57: "强冻毛毛雨",
-    61: "小雨", 63: "中雨", 65: "大雨",
-    66: "冻雨", 67: "强冻雨",
-    71: "小雪", 73: "中雪", 75: "大雪", 77: "米雪",
-    80: "阵雨", 81: "强阵雨", 82: "暴阵雨",
-    85: "阵雪", 86: "强阵雪",
-    95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "强雷暴伴冰雹",
+    0: N_("晴"), 1: N_("大致晴朗"), 2: N_("多云"), 3: N_("阴"),
+    45: N_("有雾"), 48: N_("雾凇"),
+    51: N_("细微毛毛雨"), 53: N_("毛毛雨"), 55: N_("密毛毛雨"),
+    56: N_("冻毛毛雨"), 57: N_("强冻毛毛雨"),
+    61: N_("小雨"), 63: N_("中雨"), 65: N_("大雨"),
+    66: N_("冻雨"), 67: N_("强冻雨"),
+    71: N_("小雪"), 73: N_("中雪"), 75: N_("大雪"), 77: N_("米雪"),
+    80: N_("阵雨"), 81: N_("强阵雨"), 82: N_("暴阵雨"),
+    85: N_("阵雪"), 86: N_("强阵雪"),
+    95: N_("雷阵雨"), 96: N_("雷阵雨伴冰雹"), 99: N_("强雷暴伴冰雹"),
 }
 
 
 def code_text(code: int) -> str:
-    return WMO_TEXT.get(int(code), "未知")
+    return _("未知") if int(code) not in WMO_TEXT else _(WMO_TEXT[int(code)])
 
 
 # 各档降水的"底子强度"（0-1）：只有在拿不到真实雨量时才单独用它。
@@ -99,14 +100,14 @@ def precip_label(code: int, precip_mm: float = 0.0) -> str:
     if mm <= 0.0:
         return code_text(n)             # 没有雨量：代码说是什么就是什么
     if mm < 0.2 or (n in DRIZZLE_CODES and mm < 0.6):
-        return "毛毛雨"
+        return _("毛毛雨")
     if mm <= 1.2:
-        return "小雨"
+        return _("小雨")
     if mm <= 4.5:
-        return "中雨"
+        return _("中雨")
     if mm <= 12.0:
-        return "大雨"
-    return "暴雨"
+        return _("大雨")
+    return _("暴雨")
 
 
 def precip_kind(code: int) -> str:
@@ -130,15 +131,15 @@ def uv_text(index) -> str:
     except (TypeError, ValueError):
         return "—"
     if v < 3:
-        level = "弱"
+        level = _("弱")
     elif v < 6:
-        level = "中等"
+        level = _("中等")
     elif v < 8:
-        level = "强"
+        level = _("强")
     elif v < 11:
-        level = "很强"
+        level = _("很强")
     else:
-        level = "极强"
+        level = _("极强")
     return f"{v:.0f} {level}"
 
 

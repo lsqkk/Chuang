@@ -20,6 +20,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
 from . import config as cfgmod
+from .i18n import LANGUAGES, tr as _
 
 # 勾选项的动作名。菜单、托盘、快捷键、信息卡上那颗按钮都指着同一个名字，
 # 名字写错一个，表现就是"点了没反应"——1.1.9 信息卡右上角的收起箭头
@@ -50,99 +51,126 @@ def build_menu(win) -> Gio.Menu:
             rel = win.updater.available_release
             up = Gio.Menu()
             if rel.deb_url:
-                up.append(f"下载并安装 {rel.tag}", "win.installdeb")
-                up.append("只下载 .deb 安装包", "win.downloaddeb")
-            up.append("打开发布页", "win.openreleases")
-            up.append("跳过这个版本", "win.skipversion")
-            menu.append_submenu(f"有新版本 {rel.tag} · 查看", up)
+                up.append(_("下载并安装 {tag}").format(tag=rel.tag), "win.installdeb")
+                up.append(_("只下载 .deb 安装包"), "win.downloaddeb")
+            up.append(_("打开发布页"), "win.openreleases")
+            up.append(_("跳过这个版本"), "win.skipversion")
+            menu.append_submenu(_("有新版本 {tag} · 查看").format(tag=rel.tag), up)
 
         # 一、最常用的几件事：看哪片天、点开全屏、把窗钉在最上面
         primary = Gio.Menu()
-        primary.append("换一扇窗（城市）…", "win.city")
-        primary.append("跟随真实天气", "win.weather")
-        primary.append("沉浸全屏", "win.fullscreen")
-        primary.append("窗口置顶", "win.pin")
-        primary.append("把这扇窗存成图片…", "win.savepicture")
+        primary.append(_("换一扇窗（城市）…"), "win.city")
+        primary.append(_("跟随真实天气"), "win.weather")
+        primary.append(_("沉浸全屏"), "win.fullscreen")
+        primary.append(_("窗口置顶"), "win.pin")
+        primary.append(_("把这扇窗存成图片…"), "win.savepicture")
         menu.append_section(None, primary)
 
         # 二、场景：窗外画什么。每一项都是一个开关，再加两个"一键"。
         # 名字与配置字段来自 config.SCENE_SWITCHES，加一项只改那一处。
         scene = Gio.Menu()
         for field, label in cfgmod.SCENE_SWITCHES:
-            scene.append(label, "win." + field)
+            scene.append(_(label), "win." + field)
         quick = Gio.Menu()
-        quick.append("全部画出来（默认）", "win.sceneall")
-        quick.append("只看天空（收起街上的一切）", "win.scenesky")
+        quick.append(_("全部画出来（默认）"), "win.sceneall")
+        quick.append(_("只看天空（收起街上的一切）"), "win.scenesky")
         scene.append_section(None, quick)
-        scene.append("跳到某天某时…", "win.gotodatetime")
-        menu.append_submenu("场景", scene)
+        scene.append(_("跳到某天某时…"), "win.gotodatetime")
+        menu.append_submenu(_("场景"), scene)
 
         # 三、桌面壁纸（"放到桌面上"的所有开关）
         wall = Gio.Menu()
-        wall.append("把此刻的天空设为桌面壁纸", "win.wallpaper")
-        wall.append("让壁纸跟着此刻走（定时重画）", "win.wallpaperauto")
+        wall.append(_("把此刻的天空设为桌面壁纸"), "win.wallpaper")
+        wall.append(_("让壁纸跟着此刻走（定时重画）"), "win.wallpaperauto")
         w2 = Gio.Menu()
-        for label, target in (("每 10 秒", "10"), ("每 30 秒", "30"), ("每 1 分钟", "60")):
+        for label, target in ((_("每 10 秒"), "10"), (_("每 30 秒"), "30"),
+                              (_("每 1 分钟"), "60")):
             item = Gio.MenuItem.new(label, "win.wallpaperinterval")
             item.set_attribute_value("target", GLib.Variant("s", target))
             w2.append_item(item)
-        wall.append_submenu("壁纸跟随的节奏", w2)
-        wall.append("生成整天的动态壁纸（15 分钟一帧）", "win.wallpaperday")
+        wall.append_submenu(_("壁纸跟随的节奏"), w2)
+        wall.append(_("生成整天的动态壁纸（15 分钟一帧）"), "win.wallpaperday")
         w3 = Gio.Menu()
-        w3.append("壁纸上显示「此刻的事实」", "win.wallpaperinfo")
+        w3.append(_("壁纸上显示「此刻的事实」"), "win.wallpaperinfo")
         wi = Gio.Menu()
-        for label, target in (("跟窗口一致", "follow"), ("精简一条", "slim"),
-                              ("完整版", "full")):
+        for label, target in ((_("跟窗口一致"), "follow"), (_("精简一条"), "slim"),
+                              (_("完整版"), "full")):
             item = Gio.MenuItem.new(label, "win.wallpaperinfomode")
             item.set_attribute_value("target", GLib.Variant("s", target))
             wi.append_item(item)
-        w3.append_submenu("壁纸上信息卡的版式", wi)
-        w3.append("壁纸上显示「今日天色」长卷", "win.wallpaperribbon")
-        w3.append("还原成原来的壁纸", "win.wallpaperrestore")
-        w3.append("壁纸诊断（时间不对时用）…", "win.wallpaperdiag")
+        w3.append_submenu(_("壁纸上信息卡的版式"), wi)
+        w3.append(_("壁纸上显示「今日天色」长卷"), "win.wallpaperribbon")
+        w3.append(_("还原成原来的壁纸"), "win.wallpaperrestore")
+        w3.append(_("壁纸诊断（时间不对时用）…"), "win.wallpaperdiag")
         wall.append_section(None, w3)
-        menu.append_submenu("桌面壁纸", wall)
+        menu.append_submenu(_("桌面壁纸"), wall)
 
         # 四、显示：这扇窗自己长什么样
         look = Gio.Menu()
-        look.append("显示「此刻的事实」（空格）", "win.info")
-        look.append("信息卡精简模式（C）", "win.infocompact")
-        look.append("显示「今日天色」长卷", "win.ribbon")
+        look.append(_("显示「此刻的事实」（空格）"), "win.info")
+        look.append(_("信息卡精简模式（C）"), "win.infocompact")
+        look.append(_("显示「今日天色」长卷"), "win.ribbon")
         # 画面流畅度：终端性能差得远，让它自己选（见 config.FRAME_RATES）
         smooth = Gio.Menu()
-        for label, target in (("省电 · 24 帧", "24"), ("流畅 · 30 帧", "30"),
-                              ("均衡 · 45 帧", "45"), ("顺滑 · 60 帧（默认）", "60"),
-                              ("高刷 · 120 帧", "120")):
+        for label, target in ((_("省电 · 24 帧"), "24"), (_("流畅 · 30 帧"), "30"),
+                              (_("均衡 · 45 帧"), "45"), (_("顺滑 · 60 帧（默认）"), "60"),
+                              (_("高刷 · 120 帧"), "120")):
             item = Gio.MenuItem.new(label, "win.framerate")
             item.set_attribute_value("target", GLib.Variant("s", target))
             smooth.append_item(item)
-        look.append_submenu("画面流畅度（帧率）", smooth)
-        menu.append_submenu("显示", look)
+        look.append_submenu(_("画面流畅度（帧率）"), smooth)
+        # 语言与地区：换语言、换单位、换时间制（这三样是一整套，收在一个子菜单里）
+        region = Gio.Menu()
+        langs = Gio.Menu()
+        langs.append(_("跟随系统"), "win.language")
+        for code, (native, _english) in LANGUAGES.items():
+            if code not in cfgmod.language_choices():
+                continue
+            item = Gio.MenuItem.new(native, "win.language")
+            item.set_attribute_value("target", GLib.Variant("s", code))
+            langs.append_item(item)
+        region.append_submenu(_("界面语言"), langs)
+        units = Gio.Menu()
+        for label, target in ((_("跟随语言"), "auto"), (_("公制（°C · km/h）"), "metric"),
+                              (_("英制（°F · mph）"), "imperial")):
+            item = Gio.MenuItem.new(label, "win.units")
+            item.set_attribute_value("target", GLib.Variant("s", target))
+            units.append_item(item)
+        region.append_submenu(_("测量单位"), units)
+        times = Gio.Menu()
+        for label, target in ((_("跟随语言"), "auto"), (_("24 小时制"), "h24"),
+                              (_("12 小时制"), "h12")):
+            item = Gio.MenuItem.new(label, "win.timeformat")
+            item.set_attribute_value("target", GLib.Variant("s", target))
+            times.append_item(item)
+        region.append_submenu(_("时间制"), times)
+        look.append_submenu(_("语言与地区"), region)
+        menu.append_submenu(_("显示"), look)
 
         # 五、开机与关窗：三个"待着的方式"收在一起
         behave = Gio.Menu()
-        behave.append("开机时自动打开", "win.autostart")
-        behave.append("开机时直接进托盘（不弹窗）", "win.autostarthidden")
-        for label, target in (("关窗时：问我", "ask"),
-                              ("关窗时：最小化到托盘", "tray"),
-                              ("关窗时：直接退出", "quit")):
+        behave.append(_("开机时自动打开"), "win.autostart")
+        behave.append(_("开机时直接进托盘（不弹窗）"), "win.autostarthidden")
+        for label, target in ((_("关窗时：问我"), "ask"),
+                              (_("关窗时：最小化到托盘"), "tray"),
+                              (_("关窗时：直接退出"), "quit")):
             item = Gio.MenuItem.new(label, "win.closebehavior")
             item.set_attribute_value("target", GLib.Variant("s", target))
             behave.append_item(item)
-        menu.append_submenu("开机与关窗", behave)
+        menu.append_submenu(_("开机与关窗"), behave)
 
         # 六、关于与帮助
         about = Gio.Menu()
-        about.append("检查更新…", "win.checkupdate")
-        about.append("自动检查更新", "win.autoupdate")
-        about.append("问题反馈 / 提个建议（GitHub）", "win.reportissue")
-        about.append("作者的主页（GitHub）", "win.authormain")
-        about.append("关于窗", "win.about")
-        about.append("重新启动「窗」", "win.restart")
-        menu.append_submenu("关于与帮助", about)
+        about.append(_("检查更新…"), "win.checkupdate")
+        about.append(_("自动检查更新"), "win.autoupdate")
+        about.append(_("问题反馈 / 提个建议（GitHub）"), "win.reportissue")
+        about.append(_("作者的主页（GitHub）"), "win.authormain")
+        about.append(_("关于窗"), "win.about")
+        about.append(_("重新启动「窗」"), "win.restart")
+        menu.append_submenu(_("关于与帮助"), about)
 
         quit_item = Gio.Menu()
-        quit_item.append("退出", "win.quit")
+        quit_item.append(_("退出"), "win.quit")
         menu.append_section(None, quit_item)
         return menu
 
@@ -245,6 +273,9 @@ def register_actions(win) -> None:
     add_radio("wallpaperinfomode", win.config.wallpaper_info_mode,
               win.wallpaper.act_info_mode)
     add_radio("framerate", str(win.config.frame_rate), win.frames.act_rate)
+    add_radio("language", win.config.language, win._act_language)
+    add_radio("units", win.config.units, win._act_units)
+    add_radio("timeformat", win.config.time_format, win._act_time_format)
     # 场景里的每一个开关：字段名 = 动作名 = render.UIState 上的名字
     # （config.SCENE_SWITCHES 一处定义，菜单与处理器都照着它来）
     for field, _label in cfgmod.SCENE_SWITCHES:

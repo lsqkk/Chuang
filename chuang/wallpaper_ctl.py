@@ -17,6 +17,7 @@ import time as _time
 
 from . import config as cfgmod
 from . import wallpaper as wallmod
+from .i18n import tr as _
 
 # 默认的壁纸跟随间隔（秒）；用户可在菜单里改成 30 秒 / 1 分钟
 DEFAULT_INTERVAL = 10
@@ -24,8 +25,10 @@ DEFAULT_INTERVAL = 10
 # 偶尔真的换一次 URI，兜底那种"shell 的监听链路断了"的极端情况）
 FLIP_EVERY = 300.0
 
-# 壁纸上那张「此刻的事实」的版式说明（值见 config.INFO_MODES）
+# 壁纸上那张「此刻的事实」的版式说明（值见 config.INFO_MODES）。
+# 存的是 msgid，用的时候再过一遍 `_()`（语言可以随时换，不能在这里冻住）。
 INFO_MODE_TEXT = {"follow": "跟窗口一致", "slim": "精简一条", "full": "完整版"}
+INFO_MODE_HINT = {"follow": "（窗口收成一条，壁纸也跟着收）"}
 
 
 def info_compact_for(mode: str, window_compact: bool) -> bool:
@@ -152,7 +155,7 @@ class WallpaperController:
             adopt=adopt, weather_off=weather_off, compact=compact, inset=inset,
             scene_opts=self.scene_opts())
         if not quiet:
-            self.win.toast("正在把这扇窗挂到桌面上…", 2.0)
+            self.win.toast(_("正在把这扇窗挂到桌面上…"), 2.0)
 
     def _done(self, ok: bool, msg: str, slot: int, quiet: bool = False) -> bool:
         self.config.wallpaper_slot = slot
@@ -191,20 +194,22 @@ class WallpaperController:
                 self.set_by_us = False
                 self.win.set_toggle("wallpaperauto", False)
                 self.win.toast_detailed(
-                    "你换了壁纸，「窗」就不再自动跟着了", 9.0,
-                    "检测到桌面壁纸已经换成别的了，所以「窗」停手，不再每 10 秒覆盖它。\n\n"
-                    "想让它继续跟着此刻走：菜单 → 桌面壁纸 → 壁纸跟随此刻。\n"
-                    "想保留刚才那张天空：不用做什么。")
+                    _("你换了壁纸，「窗」就不再自动跟着了"), 9.0,
+                    _("检测到桌面壁纸已经换成别的了，所以「窗」停手，不再每 10 秒覆盖它。\n\n"
+                      "想让它继续跟着此刻走：菜单 → 桌面壁纸 → 壁纸跟随此刻。\n"
+                      "想保留刚才那张天空：不用做什么。"))
             return
         stale = wallmod.stale_shown_slot()
         if stale is not None:
-            ok, _ = wallmod.set_wallpaper(wallmod.SLOTS[stale])
+            # 别把返回值丢进 `_`：这个模块的 `_` 是翻译函数，同函数里再赋值
+            # 会让上面那句 `_("你换了壁纸…")` 变成"局部变量未赋值"。
+            ok, _msg = wallmod.set_wallpaper(wallmod.SLOTS[stale])
             if ok:
                 wallmod.touch(wallmod.SLOTS[stale])   # 逼 shell 丢掉旧解码
             self.next_at = 0.0                        # 顺手重画一张最新的
 
     # ---- 菜单里那几个动作 ---------------------------------------------
-    def act_now(self, *_):
+    def act_now(self, *_args):
         self.apply()
 
     def act_auto(self, want: bool):
@@ -215,10 +220,11 @@ class WallpaperController:
         self.next_at = _time.monotonic() + self.config.wallpaper_interval
         if want:
             self.apply()
-            self.win.toast(f"壁纸每 {self.config.wallpaper_interval} 秒跟着此刻换一张"
-                           "（要一直更新，记得把「窗」留在托盘里）", 6.0)
+            self.win.toast(_("壁纸每 {n} 秒跟着此刻换一张"
+                             "（要一直更新，记得把「窗」留在托盘里）").format(
+                n=self.config.wallpaper_interval), 6.0)
         else:
-            self.win.toast("壁纸不再自动更新，现在这张会留着", 4.0)
+            self.win.toast(_("壁纸不再自动更新，现在这张会留着"), 4.0)
 
     def act_interval(self, value: str):
         try:
@@ -230,16 +236,18 @@ class WallpaperController:
         self.config.wallpaper_interval = seconds
         self.config.save()
         self.next_at = _time.monotonic() + seconds
-        text = {10: "10 秒", 30: "30 秒", 60: "1 分钟"}[seconds]
-        self.win.toast(f"壁纸会每 {text}跟着此刻换一张" if self.config.wallpaper_auto
-                       else f"壁纸跟随的节奏已设为 {text}")
+        text = {10: _("10 秒"), 30: _("30 秒"), 60: _("1 分钟")}[seconds]
+        self.win.toast(_("壁纸会每 {text}跟着此刻换一张").format(text=text)
+                       if self.config.wallpaper_auto
+                       else _("壁纸跟随的节奏已设为 {text}").format(text=text))
 
     def act_info(self, want: bool):
         self.config.wallpaper_show_info = want
         self.config.save()
         if self.config.wallpaper_auto:
             self.apply(quiet=True)
-        self.win.toast("壁纸上会带上「此刻的事实」" if want else "壁纸只留下景色", 3.5)
+        self.win.toast(_("壁纸上会带上「此刻的事实」") if want
+                       else _("壁纸只留下景色"), 3.5)
 
     def act_info_mode(self, value: str):
         """壁纸上那张卡要哪种版式：跟随窗口 / 精简一条 / 完整版。"""
@@ -247,27 +255,28 @@ class WallpaperController:
         self.config.save()
         if self.config.wallpaper_auto:
             self.apply(quiet=True)
-        text = INFO_MODE_TEXT.get(value, "跟窗口一致")
-        note = "（窗口收成一条，壁纸也跟着收）" if value == "follow" else ""
-        self.win.toast(f"壁纸上的信息卡：{text}{note}", 3.5)
+        text = _(INFO_MODE_TEXT.get(value, "跟窗口一致"))
+        note = _(INFO_MODE_HINT["follow"]) if value == "follow" else ""
+        self.win.toast(_("壁纸上的信息卡：{text}{note}").format(text=text, note=note), 3.5)
 
     def act_ribbon(self, want: bool):
         self.config.wallpaper_show_ribbon = want
         self.config.save()
         if self.config.wallpaper_auto:
             self.apply(quiet=True)
-        self.win.toast("壁纸上会带上「今日天色」长卷" if want else "壁纸不带长卷了", 3.5)
+        self.win.toast(_("壁纸上会带上「今日天色」长卷") if want
+                       else _("壁纸不带长卷了"), 3.5)
 
-    def act_day(self, *_):
+    def act_day(self, *_args):
         """生成"离线动态壁纸"：一天切成 96 帧，写成 GNOME 的定时壁纸 XML。"""
         if self.busy:
-            self.win.toast("还在画，等一下…", 3.0)
+            self.win.toast(_("还在画，等一下…"), 3.0)
             return
         self.remember()
         show_info, show_ribbon = self.opts()
         compact = self.compact()
         size, weather, weather_off, inset = self._render_target()
-        self.win.toast("正在画这一天的 96 张天色，约二十秒…", 6.0)
+        self.win.toast(_("正在画这一天的 96 张天色，约二十秒…"), 6.0)
         self.worker.render_day(self.win.engine.local_date(), weather,
                                show_info, show_ribbon, size, 96,
                                self._progress, self._day_done,
@@ -275,7 +284,8 @@ class WallpaperController:
                                scene_opts=self.scene_opts())
 
     def _progress(self, done: int, total: int) -> bool:
-        self.win.painter.ui.toast = f"正在画今天的天色 {done}/{total}"
+        self.win.painter.ui.toast = _("正在画今天的天色 {done}/{total}").format(
+            done=done, total=total)
         self.win.painter.ui.toast_until = _time.time() + 3.0
         self.win.area.queue_draw()
         return False
@@ -286,14 +296,14 @@ class WallpaperController:
             self.win.set_toggle("wallpaperauto", False)
             self.config.wallpaper_dynamic = True
             self.config.save()
-            self.win.toast("动态壁纸做好了：今天 24 小时会自己走一遍，不开着也有效", 7.0)
+            self.win.toast(_("动态壁纸做好了：今天 24 小时会自己走一遍，不开着也有效"), 7.0)
         else:
             self.win.toast(msg, 6.0)
         return False
 
-    def act_restore(self, *_):
+    def act_restore(self, *_args):
         if not self.config.prev_wallpaper:
-            self.win.toast("没有记下你原来的壁纸；可以从「设置 → 外观」里挑一张", 5.0)
+            self.win.toast(_("没有记下你原来的壁纸；可以从「设置 → 外观」里挑一张"), 5.0)
             return
         ok, msg = wallmod.restore(self.config.prev_wallpaper,
                                   self.config.prev_wallpaper_dark,
@@ -307,11 +317,11 @@ class WallpaperController:
             self.config.save()
         self.win.toast(msg, 5.0)
 
-    def act_diagnostics(self, *_):
+    def act_diagnostics(self, *_args):
         """把"壁纸/时间到底怎么了"摊开成一段可复制的文字。
 
         这类毛病是"有时候"发生的，光靠转述很难查；发生的那一刻点一下这里，
         把内容贴出来就够了。
         """
-        self.win._show_detail("壁纸诊断（可以整段复制）",
+        self.win._show_detail(_("壁纸诊断（可以整段复制）"),
                               self.win._diagnostics_wallpaper())

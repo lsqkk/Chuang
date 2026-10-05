@@ -32,6 +32,7 @@ from . import devhooks
 from . import diagnostics as diag
 from . import export as exportmod
 from . import frames as framemod
+from . import i18n
 from . import infocard as factmod
 from . import instance
 from . import keys as keymod
@@ -47,10 +48,12 @@ from .render import SkyPainter
 from .scene import SkyEngine, facing_azimuth, human_hint
 from .weather import WeatherService
 
+_ = i18n.tr
+
 
 class ChuangWindow(Adw.ApplicationWindow):
     def __init__(self, app: "ChuangApp"):
-        super().__init__(application=app, title="窗")
+        super().__init__(application=app, title=_("窗"))
         self.app = app
         self.config = app.config
         self.engine = SkyEngine()
@@ -163,7 +166,7 @@ class ChuangWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
     # 动作
     # ------------------------------------------------------------------
-    def _act_fullscreen(self, *_):
+    def _act_fullscreen(self, *_args):
         if self.is_fullscreen():
             self.unfullscreen()
         else:
@@ -202,7 +205,7 @@ class ChuangWindow(Adw.ApplicationWindow):
 
     def _act_pin(self, want: bool):
         if want and not self.pin_ok:
-            self.toast("置顶需要先安装 python3-xlib")
+            self.toast(_("置顶需要先安装 python3-xlib"))
             self.pin_button.set_active(False)
             return
         self.config.always_on_top = want
@@ -210,7 +213,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         if self.pin_button.get_active() != want:
             self.pin_button.set_active(want)
         self.topmost.set_above(want)
-        self.toast("已置顶，可以缩成一条小窗放在角落" if want else "取消置顶")
+        self.toast(_("已置顶，可以缩成一条小窗放在角落") if want else _("取消置顶"))
 
     def _act_weather(self, want: bool):
         self.config.mirror_weather = want
@@ -220,21 +223,59 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._ribbon_key = None
         if want:
             self.weather.refresh(force=True)
-            self.toast("窗外的天气会真实地出现在窗上")
+            self.toast(_("窗外的天气会真实地出现在窗上"))
         else:
-            self.toast("只看天，不看天气")
+            self.toast(_("只看天，不看天气"))
 
     def _act_ribbon(self, want: bool):
         self.painter.ui.show_ribbon = want
         self.config.show_ribbon = want
         self.config.save()
         self.area.queue_draw()
-        self.toast("今日淡淡的长卷回来了" if want
-                   else "收起长卷，窗外只剩景色", 2.4)
+        self.toast(_("今日淡淡的长卷回来了") if want
+                   else _("收起长卷，窗外只剩景色"), 2.4)
 
-    def _act_city(self, *_):
+    def _act_city(self, *_args):
         CityDialog(self, self._set_location, self.toast,
                    current=self.config.location).present()
+
+    # ------------------------------------------------------------------
+    # 语言与地区：换语言、换单位、换时间制
+    # ------------------------------------------------------------------
+    def _after_locale_change(self) -> None:
+        """换语言 / 换单位之后：所有离屏缓存与菜单都得按新写法重来。"""
+        self._scene_key = None
+        self._ribbon_key = None
+        self.painter.ui.ribbon_key = None
+        self.painter.ui.ribbon_surface = None
+        self.painter.invalidate_location()   # 清掉那几张离屏缓存（含卡片）
+        self.title_widget.set_title(_("窗"))
+        self.title_widget.set_subtitle(i18n.place_label(self.config.location.label))
+        self.refresh_menu()
+        self.area.queue_draw()
+
+    def _act_language(self, value: str):
+        self.config.language = value
+        self.config.save()
+        i18n.setup(value, self.config.units, self.config.time_format)
+        self._after_locale_change()
+        self.toast(_("界面语言：{name}").format(name=i18n.language_name()))
+
+    def _act_units(self, value: str):
+        self.config.units = value
+        self.config.save()
+        i18n.setup(self.config.language, value, self.config.time_format)
+        self._after_locale_change()
+        name = _("英制") if i18n.units_system() == "imperial" else _("公制")
+        self.toast(_("测量单位：{name}").format(name=name))
+
+    def _act_time_format(self, value: str):
+        self.config.time_format = value
+        self.config.save()
+        i18n.setup(self.config.language, self.config.units, value)
+        self._after_locale_change()
+        name = _("12 小时制") if i18n.hour12() else _("24 小时制")
+        self.toast(_("时间制：{name}").format(name=name))
 
     # ------------------------------------------------------------------
     # 场景：窗外画什么（菜单 → 场景）
@@ -260,20 +301,21 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.area.queue_draw()
         if not quiet:
             label = dict(cfgmod.SCENE_SWITCHES).get(field, field)
-            self.toast(f"{label}·{'画出来了' if want else '收起来了'}", 2.0)
+            self.toast(_("{name}·{state}").format(
+                name=_(label), state=_("画出来了") if want else _("收起来了")), 2.0)
 
-    def _act_scene_all(self, *_):
+    def _act_scene_all(self, *_args):
         """一键：窗外的世界全画出来（回到出厂那幅画）。"""
         for field, _label in cfgmod.SCENE_SWITCHES:
             self._set_scene_switch(field, True, quiet=True)
-        self.toast("窗外的世界都回来了", 2.4)
+        self.toast(_("窗外的世界都回来了"), 2.4)
 
-    def _act_scene_sky(self, *_):
+    def _act_scene_sky(self, *_args):
         """一键：只看天空——街上的人、车、树、楼一起收起来。"""
         for field in ("show_people", "show_traffic", "show_trees", "show_lamps",
                       "show_planes", "show_skyline"):
             self._set_scene_switch(field, False, quiet=True)
-        self.toast("街上收起来了 · 只剩天上那一片", 2.6)
+        self.toast(_("街上收起来了 · 只剩天上那一片"), 2.6)
 
     # ------------------------------------------------------------------
     # 桌面壁纸与诊断
@@ -308,19 +350,21 @@ class ChuangWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
     # 关窗与托盘（「关于」那一组在 about.py，检查更新在 update_ui.py）
     # ------------------------------------------------------------------
-    def _act_show(self, *_):
+    def _act_show(self, *_args):
         self.set_visible(True)
         self.present()
 
-    def _act_quit(self, *_):
+    def _act_quit(self, *_args):
         self._really_quit = True
         self.close()
 
     def _act_close_behavior(self, value: str):
         self.config.close_behavior = value
         self.config.save()
-        names = {"ask": "每次问你", "tray": "最小化到托盘", "quit": "直接退出"}
-        self.toast("关闭窗口时：" + names.get(self.config.close_behavior, ""), 3.0)
+        names = {"ask": _("每次问你"), "tray": _("最小化到托盘"),
+                 "quit": _("直接退出")}
+        self.toast(_("关闭窗口时：{name}").format(
+            name=names.get(self.config.close_behavior, "")), 3.0)
 
     def _ask_close(self):
         """第一次关窗时问一次，并记住。"""
@@ -331,14 +375,14 @@ class ChuangWindow(Adw.ApplicationWindow):
     def _on_close_answer(self, choice: str, remember: bool):
         to_tray = choice == "tray"
         if to_tray and not (self.tray and self.tray.available):
-            self.toast("系统托盘不可用，这次先直接退出了", 5.0)
+            self.toast(_("系统托盘不可用，这次先直接退出了"), 5.0)
             to_tray = False
         if remember:
             value = GLib.Variant.new_string("tray" if to_tray else "quit")
             self.activate("closebehavior", value)
         if to_tray:
             self.set_visible(False)
-            self.toast("还在托盘里看着你的天空", 3.0)
+            self.toast(_("还在托盘里看着你的天空"), 3.0)
         else:
             self._really_quit = True
             self.close()
@@ -347,7 +391,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         try:
             self.tray = traymod.Tray(self.menu_model, self._tray_activate,
                                      self._tray_lookup,
-                                     prefix_items=[("显示「窗」", "win.show")],
+                                     prefix_items=[(_("显示「窗」"), "win.show")],
                                      activate_action="win.show")
             self.tray.start()
         except Exception:
@@ -376,27 +420,29 @@ class ChuangWindow(Adw.ApplicationWindow):
         self.config.autostart = want
         self.config.save()
         if want:
-            self.toast("每次开机，这扇窗都会自己打开" if not self.config.autostart_hidden
-                       else "每次开机，这扇窗会自己待在托盘里")
+            self.toast(_("每次开机，这扇窗都会自己打开")
+                       if not self.config.autostart_hidden
+                       else _("每次开机，这扇窗会自己待在托盘里"))
         else:
-            self.toast("已取消开机自启")
+            self.toast(_("已取消开机自启"))
 
     def _act_autostart_hidden(self, want: bool):
         self.config.autostart_hidden = want
         self.config.save()
         if self.config.autostart:
             cfgmod.set_autostart(True, self.app.installed_launcher(), hidden=want)
-        self.toast("开机时直接进托盘，不弹窗" if want else "开机时正常打开窗口", 3.5)
+        self.toast(_("开机时直接进托盘，不弹窗") if want
+                   else _("开机时正常打开窗口"), 3.5)
 
     # 「关于」那一组（关于窗 / 作者主页 / 问题反馈）住在 about.py，
     # 这里只留转发——菜单里那三条动作名指着这几个方法（见 actions.register_actions）
-    def _act_about(self, *_):
+    def _act_about(self, *_args):
         aboutmod.show_about(self)
 
-    def _act_author_main(self, *_):
+    def _act_author_main(self, *_args):
         aboutmod.open_author(self)
 
-    def _act_report_issue(self, *_):
+    def _act_report_issue(self, *_args):
         aboutmod.report_issue(self)
 
     def _diagnostics(self) -> str:
@@ -407,7 +453,7 @@ class ChuangWindow(Adw.ApplicationWindow):
             Gio.AppInfo.launch_default_for_uri(url, None)
             self.toast(ok_msg, 4.0)
         except Exception:
-            self.toast(f"打不开浏览器，地址是 {url}", 8.0)
+            self.toast(_("打不开浏览器，地址是 {url}").format(url=url), 8.0)
 
     def _set_location(self, location: cfgmod.Location):
         self.config.location = location
@@ -420,8 +466,9 @@ class ChuangWindow(Adw.ApplicationWindow):
         self._set_preview(None)
         self.painter.ui.ribbon_key = None
         self.painter.ui.ribbon_surface = None
-        self.title_widget.set_subtitle(location.label)
-        self.toast(f"现在这扇窗朝着 {location.full_label or location.name}")
+        self.title_widget.set_subtitle(i18n.place_label(location.label))
+        self.toast(_("现在这扇窗朝着 {place}").format(
+            place=i18n.place_label(location.full_label or location.name)))
         self.area.queue_draw()
         # 桌面上的那张还朝着旧城市，别等下一个周期，立刻换掉
         if self.config.wallpaper_auto:
@@ -465,10 +512,12 @@ class ChuangWindow(Adw.ApplicationWindow):
         """"跳过去看"的那句话：别的日子要看清楚是**哪一天**。"""
         today = self._now().date()
         if when.date() == today:
-            return f"正在看 {when:%H:%M} 的窗外 · Esc 回到此刻"
-        return f"正在看 {when:%m-%d %H:%M} 的窗外 · Esc 回到此刻"
+            return _("正在看 {time} 的窗外 · Esc 回到此刻").format(
+                time=i18n.clock(when))
+        return _("正在看 {date} {time} 的窗外 · Esc 回到此刻").format(
+            date=i18n.date_short(when), time=i18n.clock(when))
 
-    def _act_goto_datetime(self, *_):
+    def _act_goto_datetime(self, *_args):
         """选一个日期 + 时刻跳过去（比来回拖长卷省事）。"""
         ui = self.painter.ui
         when = ui.preview_dt or self._now()
@@ -483,7 +532,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         key = (when.strftime("%Y-%m-%d %H:%M"),
                getattr(weather, "fetched_at", 0),
                self.weather.enabled,
-               self.config.location.name)
+               self.config.location.name,
+               i18n.units_tag())
         if key != self._scene_key or self._scene is None:
             self._scene = self.engine.build(
                 when, weather,
@@ -499,7 +549,8 @@ class ChuangWindow(Adw.ApplicationWindow):
         key = (day.strftime("%Y-%m-%d"),
                getattr(weather, "fetched_at", 0),
                self.weather.enabled,
-               self.config.location.name)
+               self.config.location.name,
+               i18n.units_tag())
         if key == self._ribbon_key:
             return
         self._ribbon_key = key
@@ -520,7 +571,7 @@ class ChuangWindow(Adw.ApplicationWindow):
         """这扇窗朝哪边（北半球朝南）——和壁纸、导出的图片用的是同一个值。"""
         return facing_azimuth(self.config.location.lat)
 
-    def _act_savepicture(self, *_):
+    def _act_savepicture(self, *_args):
         """菜单 → 「把这扇窗存成图片…」：把此刻这一帧写进 ~/Pictures。
 
         画的就是**你现在看到的这一帧**（同一个尺寸、预览时就是预览那一刻），
@@ -535,12 +586,14 @@ class ChuangWindow(Adw.ApplicationWindow):
         try:
             exportmod.save_png(self.painter, scene, w, h, path)
         except Exception as exc:                     # noqa: BLE001 - 磁盘满 / 没权限
-            self.toast(f"没能写出图片：{exc}", 6.0, icon="warn")
+            self.toast(_("没能写出图片：{err}").format(err=exc), 6.0, icon="warn")
             return
         self.toast_detailed(
-            f"存好了：{path.name}", 7.0,
-            f"这一帧存在：\n{path}\n\n{w}×{h}，和你此刻看到的一样。\n"
-            f"（{when:%Y-%m-%d %H:%M} · {scene.location_label or scene.location_name}）",
+            _("存好了：{name}").format(name=path.name), 7.0,
+            _("这一帧存在：\n{path}\n\n{w}×{h}，和你此刻看到的一样。\n"
+              "（{when} · {place}）").format(
+                path=path, w=w, h=h, when=i18n.stamp(when),
+                place=i18n.place_label(scene.location_label or scene.location_name)),
             icon="check")
 
     def _tick(self):
@@ -581,12 +634,14 @@ class ChuangWindow(Adw.ApplicationWindow):
             # 标题上的时间要一直跟着走：以前只在窗口可见时更新，收进托盘
             # 再打开就会停在旧的一分钟上（看起来像"时间没刷新"）。
             self.title_widget.set_subtitle(
-                f"{self.config.location.label} · {clock.strftime('%H:%M')}")
+                f"{i18n.place_label(self.config.location.label)} · {i18n.clock(clock)}")
             try:                       # 给屏幕阅读器一句"此刻的窗外"
                 sc = self._current_scene()
                 self.area.update_property(
                     [Gtk.AccessibleProperty.DESCRIPTION],
-                    [f"{self.config.location.label}，{sc.period_name}：{human_hint(sc)}"])
+                    [_("{place}，{period}：{hint}").format(
+                        place=i18n.place_label(self.config.location.label),
+                        period=sc.period_name, hint=human_hint(sc))])
             except Exception:
                 pass
             self.weather.maybe_refresh()
@@ -643,15 +698,15 @@ class ChuangWindow(Adw.ApplicationWindow):
             return
         self.config.first_run_done = True
         if self.config.location.guessed:
-            self.toast(f"先按你的时区猜了「{self.config.location.name}」"
-                       f"，不对的话：菜单 → 换一扇窗", 9.0)
+            self.toast(_("先按你的时区猜了「{name}」，不对的话：菜单 → 换一扇窗").format(
+                name=i18n.place(self.config.location.name)), 9.0)
         else:
-            self.toast("空格 隐藏信息卡 · 点上面的日出/日落可以跳过去看 · "
-                       "拖底部长卷预览今天的天色 · 菜单 → 场景 里能收起街上的车与人",
+            self.toast(_("空格 隐藏信息卡 · 点上面的日出/日落可以跳过去看 · "
+                         "拖底部长卷预览今天的天色 · 菜单 → 场景 里能收起街上的车与人"),
                        9.0)
         self.config.save()
 
-    def _on_close(self, *_):
+    def _on_close(self, *_args):
         try:
             self.config.window_w = self.get_width()
             self.config.window_h = self.get_height()
@@ -677,6 +732,8 @@ class ChuangApp(Adw.Application):
     def __init__(self, force_city: bool = False, hidden: bool = False):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
         self.config = cfgmod.Config.load()
+        # 语言要在做任何界面之前定下来（菜单、对话框、画出来的字都读它）
+        i18n.setup(self.config.language, self.config.units, self.config.time_format)
         if not self.config.location.name:
             self.config.location = cfgmod.guess_location()
             self.config.save()
@@ -755,7 +812,8 @@ class ChuangApp(Adw.Application):
 
 def run(argv=None, force_city: bool = False) -> int:
     if not instance.claim():
-        print("「窗」已经在运行；这次只把原来那扇窗叫到了前面。", file=sys.stderr)
+        print(i18n.tr("「窗」已经在运行；这次只把原来那扇窗叫到了前面。"),
+              file=sys.stderr)
         return 0
     argv = list(argv or [])
     hidden = "--hidden" in argv

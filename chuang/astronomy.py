@@ -15,6 +15,9 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from . import i18n
+from .i18n import N_
+
 DEG = math.pi / 180.0
 RAD = 180.0 / math.pi
 
@@ -544,18 +547,19 @@ def sun_events(local_date: datetime, lat: float, lon: float) -> dict:
 # --------------------------------------------------------------------------
 
 PHASE_NAMES = [
-    (0.02, "新月"), (0.22, "蛾眉月"), (0.28, "上弦月"), (0.47, "盈凸月"),
-    (0.53, "满月"), (0.72, "亏凸月"), (0.78, "下弦月"), (0.98, "残月"),
+    (0.02, N_("新月")), (0.22, N_("蛾眉月")), (0.28, N_("上弦月")),
+    (0.47, N_("盈凸月")), (0.53, N_("满月")), (0.72, N_("亏凸月")),
+    (0.78, N_("下弦月")), (0.98, N_("残月")),
 ]
 
 
 def phase_name(phase: float) -> str:
     if phase < 0.02 or phase > 0.98:
-        return "新月"
+        return i18n.tr("新月")
     for limit, name in PHASE_NAMES:
         if phase <= limit:
-            return name
-    return "残月"
+            return i18n.tr(name)
+    return i18n.tr("残月")
 
 
 def moon_age_days(phase: float) -> float:

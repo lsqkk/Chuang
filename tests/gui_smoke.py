@@ -107,6 +107,8 @@ def _isolate() -> Path:
 
 
 HOME = _isolate()
+# 语言也钉死：冒烟里的探针与断言都按中文原文写，CI 的 LANG 与本机不一样。
+os.environ.setdefault("CHUANG_LANG", "zh")
 sys.path.insert(0, str(ROOT))
 
 import chuang  # noqa: E402
@@ -135,7 +137,7 @@ EXPECTED_TOGGLES = {
     "show_plant", "plant_sway",
 }
 EXPECTED_RADIOS = {"closebehavior", "wallpaperinterval", "wallpaperinfomode",
-                   "framerate"}
+                   "framerate", "language", "units", "timeformat"}
 
 # ---- 动作清单：每个动作要么"能安全激活"，要么"写明为什么不激活 -------------
 # 加新动作时必须二选一，否则测试会失败——这样就不会有人悄悄加一个
@@ -159,6 +161,10 @@ SAFE_TO_ACTIVATE = {
     "win.infocompact": None,       # 只改信息卡怎么画
     "win.ribbon": None,
     "win.framerate": "60",         # 只改帧率上限（探针里还会真的验一次）
+    # 语言与地区：只用"跟随/公制/24 小时"，画面写法不变（探针里另有一次真的换语言）
+    "win.language": "auto",
+    "win.units": "metric",
+    "win.timeformat": "h24",
     # 菜单 → 场景：每一项只改"窗外画不画"，不碰桌面、不联网
     "win.show_people": None,
     "win.show_traffic": None,
@@ -617,6 +623,35 @@ def main() -> int:
         win.activate("framerate", GLib.Variant.new_string("60"))
         if win.config.frame_rate != 60:
             problems.append("画面流畅度改回 60 失败")
+
+        # 7c-2) 语言与地区：换语言要立刻生效、写进配置，并让信息卡按新文字重画；
+        #       换单位同理（公制 / 英制）；两样都要能改回"跟随"。
+        from chuang import i18n as i18nmod
+        key_before = win.painter._info_key(1000, 650, scene)
+        win.activate("language", GLib.Variant.new_string("en"))
+        results["language_en"] = [i18nmod.language(), win.config.language]
+        if i18nmod.language() != "en" or win.config.language != "en":
+            problems.append(f"切到英文没生效：{results['language_en']}")
+        if win.painter._info_key(1000, 650, scene) == key_before:
+            problems.append("换语言之后信息卡缓存键没变（卡片会停在旧文字上）")
+        win.activate("language", GLib.Variant.new_string("auto"))
+        if i18nmod.language() != "zh":
+            problems.append(f"切回「跟随系统」之后不是中文：{i18nmod.language()}")
+        units_before = win.painter._info_key(1000, 650, scene)
+        win.activate("units", GLib.Variant.new_string("imperial"))
+        results["units_imperial"] = i18nmod.units_system()
+        if i18nmod.units_system() != "imperial" or win.config.units != "imperial":
+            problems.append("切到英制没生效")
+        if win.painter._info_key(1000, 650, scene) == units_before:
+            problems.append("换单位之后信息卡缓存键没变")
+        win.activate("units", GLib.Variant.new_string("metric"))
+        win.activate("timeformat", GLib.Variant.new_string("h12"))
+        results["timeformat_h12"] = i18nmod.hour12()
+        if not i18nmod.hour12():
+            problems.append("切到 12 小时制没生效")
+        win.activate("timeformat", GLib.Variant.new_string("auto"))
+        if win.config.units != "metric" or win.config.time_format != "auto":
+            problems.append("语言与地区的设置没能改回默认")
 
         # 7d) 把这扇窗存成图片：只写进这次测试的一次性 HOME（`~/Pictures`），
         #     画的就是刚才那一帧；同名的绝不覆盖。

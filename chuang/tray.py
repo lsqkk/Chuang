@@ -11,6 +11,8 @@ import gi
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
+from .i18n import tr as _
+
 SNI_PATH = "/StatusNotifierItem"
 MENU_PATH = "/MenuBar"
 WATCHER_NAME = "org.kde.StatusNotifierWatcher"
@@ -415,7 +417,7 @@ class Tray:
         values = {
             "Category": GLib.Variant("s", "ApplicationStatus"),
             "Id": GLib.Variant("s", "chuang"),
-            "Title": GLib.Variant("s", "窗"),
+            "Title": GLib.Variant("s", _("窗")),
             "Status": GLib.Variant("s", "Active"),
             "WindowId": GLib.Variant("i", 0),
             "IconThemePath": GLib.Variant("s", ""),

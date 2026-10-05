@@ -268,16 +268,51 @@ def rounded_rect(cr, x, y, w, h, r):
     cr.close_path()
 
 
-def wrap_cjk(text: str, per_line: int) -> list[str]:
-    """按字数折行（中文每个字都是等宽的，够用且不需要逐字测量）。"""
-    if per_line <= 0:
-        return [text]
-    lines, cur = [], ""
+def _wrap_units(text: str) -> float:
+    """一行字大概占多宽（以"一个全角字"为 1 个单位）。"""
+    return sum(1.0 if ord(ch) > 0x2E80 else 0.58 for ch in text)
+
+
+def _wrap_chars(text: str, budget: float) -> list[str]:
+    """按"宽度预算"逐字折行（中文这种没有空格的语言用它）。"""
+    lines: list[str] = []
+    cur, used = "", 0.0
     for ch in text:
-        if len(cur) >= per_line:
+        width = 1.0 if ord(ch) > 0x2E80 else 0.58
+        if cur and used + width > budget:
             lines.append(cur)
-            cur = ""
+            cur, used = "", 0.0
         cur += ch
+        used += width
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def wrap_cjk(text: str, per_line: int) -> list[str]:
+    """折行：中文按字、有空格的语言按词（英文把词从中间劈开很难看）。
+
+    `per_line` 是"一行大约放得下几个全角字"——用宽度预算折，而不是数个数，
+    所以同一段排版换到英文（半角、更窄）也不会平白空掉半行。
+    """
+    if per_line <= 0 or not text:
+        return [text]
+    budget = float(per_line)
+    if " " not in text:
+        return _wrap_chars(text, budget)
+    lines: list[str] = []
+    cur = ""
+    for word in text.split(" "):
+        candidate = f"{cur} {word}" if cur else word
+        if cur and _wrap_units(candidate) > budget:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = candidate
+        if _wrap_units(cur) > budget:       # 单个词就超宽：只能硬断
+            parts = _wrap_chars(cur, budget)
+            lines.extend(parts[:-1])
+            cur = parts[-1] if parts else cur
     if cur:
         lines.append(cur)
     return lines

@@ -24,6 +24,8 @@ PY
 )"
 
 echo "▸ 打包 $PKG $VERSION ($ARCH)"
+# 先把 po/*.po 编成运行时要读的 .mo（保证包里的译文与仓库里的 .po 一致）
+python3 "$SRC/tools/i18n.py" compile
 rm -rf "$BUILD"
 mkdir -p "$BUILD/DEBIAN" \
          "$BUILD/opt/chuang" \
@@ -65,12 +67,13 @@ Architecture: $ARCH
 Maintainer: $PKG_MAINTAINER
 Installed-Size: $INSTALLED_SIZE
 Depends: python3 (>= 3.10), python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-4.0, gir1.2-adw-1, adwaita-icon-theme
-Recommends: python3-xlib, gnome-shell-extension-appindicator
+Recommends: python3-xlib, gnome-shell-extension-appindicator, fonts-noto-cjk
 Homepage: $PKG_HOMEPAGE
 Description: 窗 · Chuang —— 把你头顶此刻真实的天空搬到桌面
  桌面上一扇会自己变化的窗：太阳、月亮、星星与云雨都由本地天文算法
  与真实天气算出，窗台上那盆植物的影子方向与长短也随真实的太阳位置变化。
  支持把此刻的天空设为桌面壁纸、最小化到系统托盘、沉浸全屏。
+ 界面支持中文 / 英文 / 日文 / 法文（可在菜单 → 显示 → 语言与地区里切换）。
 EOF
 
 # 安装后刷新菜单与图标缓存；卸载后清理配置（保留，只提示）

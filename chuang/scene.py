@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import i18n
 from . import astronomy as A
 from .palette import Mood, mood_for, ribbon_color
 from .weather import Weather
@@ -118,19 +119,19 @@ class Scene:
     def period_name(self) -> str:
         a = self.sun_alt
         if a > 12:
-            return "白天"
+            return i18n.tr("白天")
         if a > 6:                      # 6° 是天文那套"金色时刻结束"的高度
-            return "斜阳"
+            return i18n.tr("斜阳")
         if a > 0:
-            return "金色时刻"
+            return i18n.tr("金色时刻")
         # -0.833° 是"太阳正好压在地平线上"（含大气折射），再往下就算落下了
         if a > -2.5:
-            return "日落"
+            return i18n.tr("日落")
         if a > -6:
-            return "暮色"
+            return i18n.tr("暮色")
         if a > -18:
-            return "夜色渐深"
-        return "夜"
+            return i18n.tr("夜色渐深")
+        return i18n.tr("夜")
 
 
 class SkyEngine:
@@ -360,26 +361,21 @@ def facing_azimuth(lat: float) -> float:
 # 把数据翻译成人话
 # --------------------------------------------------------------------------
 
-_COMPASS = ["北", "北东北", "东北", "东北东", "东", "东南东", "东南", "东南南",
-            "南", "西南南", "西南", "西南西", "西", "西北西", "西北", "西北北"]
-
-
 def compass(az: float) -> str:
-    return _COMPASS[int(((az % 360) + 11.25) // 22.5) % 16]
+    """方位的人话——16 个方向的名字按语言来（英文是 N/NNE/…）。"""
+    return i18n.compass(az)
 
 
 def _hm(dt: datetime | None) -> str:
-    return dt.strftime("%H:%M") if dt else "—"
+    return i18n.clock(dt) if dt else "—"
 
 
 def duration_zh(delta) -> str:
-    total = int(max(0, delta.total_seconds()))
-    h, m = divmod(total // 60, 60)
-    if h and m:
-        return f"{h} 小时 {m} 分"
-    if h:
-        return f"{h} 小时"
-    return f"{m} 分钟"
+    """（保留旧名字，别处还在 import 它）一段时长的人话。"""
+    return i18n.duration(delta)
+
+
+duration_text = duration_zh
 
 
 def human_hint(sc: "Scene") -> str:
@@ -389,58 +385,67 @@ def human_hint(sc: "Scene") -> str:
         # 以前 51 和 65 都可能说成"雨"，用户分不出窗外是小雨还是倾盆。
         what = sc.precip_label or sc.weather_text
         if sc.thunder:
-            return "外面正在打雷下雨，雨会斜着打在窗上。"
+            return i18n.tr("外面正在打雷下雨，雨会斜着打在窗上。")
         if sc.precip_strength >= 0.62:
-            return f"外面在下{what}，雨点砸在玻璃上，路面已经湿得发亮。"
+            return i18n.tr("外面在下{what}，雨点砸在玻璃上，路面已经湿得发亮。").format(
+                what=what)
         if sc.precip_strength <= 0.22:
-            return f"外面飘着{what}，细得几乎看不出雨丝。"
-        return f"外面在下{what}，这种时候最适合发呆。"
+            return i18n.tr("外面飘着{what}，细得几乎看不出雨丝。").format(what=what)
+        return i18n.tr("外面在下{what}，这种时候最适合发呆。").format(what=what)
     if sc.has_weather and sc.precip_kind == "snow" and sc.precip_strength > 0.05:
-        return f"外面下着{sc.precip_label or '雪'}，雪花是慢慢飘下来的。"
+        return i18n.tr("外面下着{what}，雪花是慢慢飘下来的。").format(
+            what=sc.precip_label or i18n.tr("雪"))
     if sc.has_weather and sc.fog:
-        return "外面起雾了，远处的屋顶已经看不清。"
+        return i18n.tr("外面起雾了，远处的屋顶已经看不清。")
     if sc.has_weather and sc.cloud > 82:
-        return "云很厚，今天的光是匀匀地洒下来的，没有影子。"
+        return i18n.tr("云很厚，今天的光是匀匀地洒下来的，没有影子。")
 
     alt = sc.sun_alt
     if alt > 45:
-        return f"太阳几乎在头顶，{compass(sc.sun_az)}边的天空最亮。"
+        return i18n.tr("太阳几乎在头顶，{side}边的天空最亮。").format(
+            side=compass(sc.sun_az))
     if alt > 20:
-        return f"太阳在{compass(sc.sun_az)}方，仰角 {alt:.0f}°，影子短短的。"
+        return i18n.tr("太阳在{side}方，仰角 {alt}°，影子短短的。").format(
+            side=compass(sc.sun_az), alt=i18n.fmt_num(alt))
     if alt > 6:
-        return f"太阳在{compass(sc.sun_az)}方只有 {alt:.0f}° 高，光斜斜地照进来。"
+        return i18n.tr("太阳在{side}方只有 {alt}° 高，光斜斜地照进来。").format(
+            side=compass(sc.sun_az), alt=i18n.fmt_num(alt))
     if alt > 0.5:
-        return f"{compass(sc.sun_az)}边的天被染成了橘色，这是今天最好的光。"
+        return i18n.tr("{side}边的天被染成了橘色，这是今天最好的光。").format(
+            side=compass(sc.sun_az))
     if alt > -3:
         left = sc.daylight_left
-        tail = f"天光只剩 {duration_zh(left)}。" if left else "太阳刚刚离开。"
-        return f"太阳正在{compass(sc.sun_az)}方落到地平线下，{tail}"
+        tail = (i18n.tr("天光只剩 {left}。").format(left=duration_text(left))
+                if left else i18n.tr("太阳刚刚离开。"))
+        return i18n.tr("太阳正在{side}方落到地平线下，{tail}").format(
+            side=compass(sc.sun_az), tail=tail)
     if alt > -7:
-        return "暮色最浓的时候，天边还剩一线橘红。"
+        return i18n.tr("暮色最浓的时候，天边还剩一线橘红。")
     if alt > -14:
-        return "夜色正在从东边漫上来，第一批星星已经亮了。"
+        return i18n.tr("夜色正在从东边漫上来，第一批星星已经亮了。")
     if sc.moon_alt > 3 and sc.moon_illum > 0.15:
-        return f"{compass(sc.moon_az)}方挂着{phase_name_simple(sc.moon_phase)}的月亮，天已经黑透了。"
+        return i18n.tr("{side}方挂着{phase}的月亮，天已经黑透了。").format(
+            side=compass(sc.moon_az), phase=phase_name_simple(sc.moon_phase))
     if sc.has_weather and sc.cloud < 25:
-        return "天已经黑透，云不多，星星应该看得见。"
-    return "天已经黑透了，窗外是一片沉下来的夜色。"
+        return i18n.tr("天已经黑透，云不多，星星应该看得见。")
+    return i18n.tr("天已经黑透了，窗外是一片沉下来的夜色。")
 
 
 def phase_name_simple(phase: float) -> str:
     if phase < 0.03 or phase > 0.97:
-        return "新月"
+        return i18n.tr("新月")
     if phase < 0.22:
-        return "细细的"
+        return i18n.tr("细细的")
     if phase < 0.30:
-        return "半月"
+        return i18n.tr("半月")
     if phase < 0.47:
-        return "将满的"
+        return i18n.tr("将满的")
     if phase <= 0.53:
-        return "满"
+        return i18n.tr("满")
     if phase < 0.72:
-        return "刚过满的"
+        return i18n.tr("刚过满的")
     if phase < 0.80:
-        return "半月"
+        return i18n.tr("半月")
     if phase < 0.97:
-        return "残"
-    return "新月"
+        return i18n.tr("残")
+    return i18n.tr("新月")

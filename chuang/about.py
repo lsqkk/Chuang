@@ -19,6 +19,7 @@ from gi.repository import Gtk  # noqa: E402
 
 from . import __version__
 from . import update as upmod
+from .i18n import tr as _
 
 
 def show_about(win) -> None:
@@ -26,19 +27,20 @@ def show_about(win) -> None:
     version_text = __version__
     rel = win.updater.available_release
     if rel is not None:
-        version_text = f"{__version__}（有新版本 {rel.tag}）"
+        version_text = _("{version}（有新版本 {tag}）").format(
+            version=__version__, tag=rel.tag)
     about = Gtk.AboutDialog(
         transient_for=win, modal=True,
         program_name="窗 · Chuang", version=version_text,
         logo_icon_name="chuang",
-        comments="把你头顶此刻真实的天空，搬到桌面的一扇窗里。\n\n"
-                 "太阳、月亮、星星的位置由本地天文算法计算，"
-                 "云、雨、雪来自 Open-Meteo 的真实天气。\n"
-                 "没有任何内容离开这台电脑。",
+        comments=_("把你头顶此刻真实的天空，搬到桌面的一扇窗里。\n\n"
+                   "太阳、月亮、星星的位置由本地天文算法计算，"
+                   "云、雨、雪来自 Open-Meteo 的真实天气。\n"
+                   "没有任何内容离开这台电脑。"),
         website=upmod.AUTHOR_URL,
         website_label=f"{upmod.AUTHOR} · github.com/lsqkk",
-        authors=[f"{upmod.AUTHOR}（lsqkk）"],
-        copyright="© 2026 蓝色奇夸克",
+        authors=[_("{author}（lsqkk）").format(author=upmod.AUTHOR)],
+        copyright=_("© 2026 蓝色奇夸克"),
         license_type=Gtk.License.MIT_X11)
     # 「有问题去这里说」的直达入口（GTK 4.6 才有的属性，取不到就算了）
     try:
@@ -49,17 +51,17 @@ def show_about(win) -> None:
 
 
 def open_author(win) -> None:
-    win._open_url(upmod.AUTHOR_URL, "已经在浏览器里打开了作者的主页")
+    win._open_url(upmod.AUTHOR_URL, _("已经在浏览器里打开了作者的主页"))
 
 
 def report_issue(win) -> None:
     """打开"新建 issue"页并预填环境：用户只需要写"发生了什么"那两句。"""
-    title = f"[Bug] {__version__} · "
+    title = _("[Bug] {version} · ").format(version=__version__)
     body = (
-        "### 发生了什么\n\n（请把这句换成你看到的现象）\n\n"
-        "### 怎么复现\n\n1. \n2. \n\n"
-        "### 环境（自动填好，可删）\n\n" + win._diagnostics() + "\n"
+        _("### 发生了什么\n\n（请把这句换成你看到的现象）\n\n"
+          "### 怎么复现\n\n1. \n2. \n\n"
+          "### 环境（自动填好，可删）\n\n") + win._diagnostics() + "\n"
     )
     url = upmod.NEW_ISSUE_URL + "?" + urlencode(
         {"title": title, "body": body}, quote_via=quote)
-    win._open_url(url, "已经在浏览器里打开反馈页；把上面两句写清楚就好")
+    win._open_url(url, _("已经在浏览器里打开反馈页；把上面两句写清楚就好"))

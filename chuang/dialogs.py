@@ -18,6 +18,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config as cfgmod
+from . import i18n
+from .i18n import ntr, tr as _
 from .mainloop import to_main
 from .weather import fallback_timezone, geocode, timezone_for
 
@@ -28,7 +30,7 @@ def _local_clock(tz: str) -> str:
         return ""
     try:
         from zoneinfo import ZoneInfo
-        return datetime.now(ZoneInfo(tz)).strftime("%H:%M")
+        return i18n.clock(datetime.now(ZoneInfo(tz)))
     except Exception:
         return ""
 
@@ -46,11 +48,12 @@ def _offset_note(tz: str, base_tz: str) -> str:
     except Exception:
         return ""
     if abs(hours) < 0.01:
-        return "同时刻"
+        return _("同时刻")
     whole = int(abs(hours))
     half = abs(hours) - whole > 0.4
-    span = f"{whole} 小时" + ("半" if half else "")
-    return ("快 " if hours > 0 else "慢 ") + span
+    span = (_("{h} 小时半").format(h=whole) if half
+            else _("{h} 小时").format(h=whole))
+    return (_("快 {span}") if hours > 0 else _("慢 {span}")).format(span=span)
 
 
 def escape_closes(window: Gtk.Window) -> None:
@@ -74,32 +77,34 @@ class CloseDialog(Gtk.Window):
     def __init__(self, parent, tray_available: bool, on_choice,
                  wallpaper_auto: bool = False):
         super().__init__(transient_for=parent, modal=True, resizable=False,
-                         title="关掉「窗」吗？")
+                         title=_("关掉「窗」吗？"))
         self.on_choice = on_choice
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
                       margin_top=20, margin_bottom=18, margin_start=20, margin_end=20)
         title = Gtk.Label(xalign=0)
-        title.set_markup("<b>要把「窗」关掉吗？</b>")
+        title.set_markup(f"<b>{GLib.markup_escape_text(_('要把「窗」关掉吗？'))}</b>")
         box.append(title)
-        hint = ("留在托盘里的话，它还会继续把壁纸跟着天空更新；"
-                "托盘图标点一下就能再打开。")
+        hint = _("留在托盘里的话，它还会继续把壁纸跟着天空更新；"
+                 "托盘图标点一下就能再打开。")
         if wallpaper_auto:
-            hint = ("你的桌面壁纸正跟着此刻更新。留在托盘里它才会一直更新；"
-                    "直接退出的话，壁纸会停在现在这一刻。托盘图标点一下就能再打开。")
+            hint = _("你的桌面壁纸正跟着此刻更新。留在托盘里它才会一直更新；"
+                     "直接退出的话，壁纸会停在现在这一刻。托盘图标点一下就能再打开。")
         if not tray_available:
-            hint = "这台机器的系统托盘不可用（需要 GNOME 的 AppIndicator 扩展），只能直接退出。"
+            hint = _("这台机器的系统托盘不可用（需要 GNOME 的 AppIndicator 扩展），"
+                     "只能直接退出。")
         sub = Gtk.Label(label=hint, xalign=0, wrap=True, max_width_chars=38)
         sub.add_css_class("dim-label")
         box.append(sub)
-        self.remember = Gtk.CheckButton(label="记住我的选择（之后可在菜单里改）")
+        self.remember = Gtk.CheckButton(label=_("记住我的选择（之后可在菜单里改）"))
         box.append(self.remember)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         row.set_halign(Gtk.Align.END)
-        self.tray_button = Gtk.Button(label="最小化到托盘")
+        self.tray_button = Gtk.Button(label=_("最小化到托盘"))
         self.tray_button.add_css_class("suggested-action")
         self.tray_button.set_sensitive(tray_available)
         self.tray_button.connect("clicked", self._pick, "tray")
-        quit_button = Gtk.Button(label="直接退出（壁纸会停住）" if wallpaper_auto else "直接退出")
+        quit_button = Gtk.Button(
+            label=_("直接退出（壁纸会停住）") if wallpaper_auto else _("直接退出"))
         quit_button.connect("clicked", self._pick, "quit")
         row.append(quit_button)
         row.append(self.tray_button)
@@ -118,14 +123,15 @@ class DetailDialog(Gtk.Window):
     这类需要照着办或贴到 issue 里的内容，都放这个窗里。
     """
 
-    def __init__(self, parent, title: str, body: str, copy_label: str = "复制全部"):
+    def __init__(self, parent, title: str, body: str, copy_label: str = ""):
+        copy_label = copy_label or _("复制全部")
         super().__init__(transient_for=parent, modal=True, title=title,
                          default_width=560, default_height=340)
         self.body = body
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         header = Adw.HeaderBar()
         header.set_title_widget(Adw.WindowTitle(
-            title=title, subtitle="可以选中，也可以一键复制"))
+            title=title, subtitle=_("可以选中，也可以一键复制")))
         box.append(header)
 
         view = Gtk.TextView(editable=False, cursor_visible=False,
@@ -144,7 +150,7 @@ class DetailDialog(Gtk.Window):
         self.copy_button = Gtk.Button(label=copy_label)
         self.copy_button.add_css_class("suggested-action")
         self.copy_button.connect("clicked", self._copy)
-        close = Gtk.Button(label="关闭")
+        close = Gtk.Button(label=_("关闭"))
         close.connect("clicked", lambda *_: self.destroy())
         row.append(self.copy_button)
         row.append(close)
@@ -156,7 +162,7 @@ class DetailDialog(Gtk.Window):
         display = Gdk.Display.get_default()
         if display is not None:
             display.get_clipboard().set(self.body)
-            self.copy_button.set_label("已复制 ✓")
+            self.copy_button.set_label(_("已复制 ✓"))
 
 
 class ChoiceDialog(Gtk.Window):
@@ -197,7 +203,7 @@ class TimeTravelDialog(Gtk.Window):
     """跳到任意一天任意一刻（拖长卷只能左右挪，这里可以一步到位）。"""
 
     def __init__(self, parent, when, tzinfo, on_pick, on_now):
-        super().__init__(transient_for=parent, modal=True, title="跳到某一刻",
+        super().__init__(transient_for=parent, modal=True, title=_("跳到某一刻"),
                          default_width=380, default_height=430)
         self.tzinfo = tzinfo
         self.on_pick = on_pick
@@ -206,7 +212,7 @@ class TimeTravelDialog(Gtk.Window):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         header = Adw.HeaderBar()
         header.set_title_widget(Adw.WindowTitle(
-            title="跳到某一刻", subtitle="选好日期与时间，窗会停在那里"))
+            title=_("跳到某一刻"), subtitle=_("选好日期与时间，窗会停在那里")))
         box.append(header)
 
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
@@ -223,7 +229,7 @@ class TimeTravelDialog(Gtk.Window):
         inner.append(self.calendar)
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.append(Gtk.Label(label="时间"))
+        row.append(Gtk.Label(label=_("时间")))
         self.hour = Gtk.SpinButton.new_with_range(0, 23, 1)
         self.hour.set_value(when.hour)
         self.minute = Gtk.SpinButton.new_with_range(0, 59, 1)
@@ -234,18 +240,18 @@ class TimeTravelDialog(Gtk.Window):
         inner.append(row)
 
         hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=36,
-                         label="提示：预览时窗里的天色停在你选的那一刻，"
-                               "但街上的人车、天上的云照常动。")
+                         label=_("提示：预览时窗里的天色停在你选的那一刻，"
+                                 "但街上的人车、天上的云照常动。"))
         hint.add_css_class("dim-label")
         inner.append(hint)
 
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         actions.set_halign(Gtk.Align.END)
-        now_btn = Gtk.Button(label="回到此刻")
+        now_btn = Gtk.Button(label=_("回到此刻"))
         now_btn.connect("clicked", self._now)
-        cancel = Gtk.Button(label="取消")
+        cancel = Gtk.Button(label=_("取消"))
         cancel.connect("clicked", lambda *_: self.destroy())
-        go = Gtk.Button(label="跳到这一刻")
+        go = Gtk.Button(label=_("跳到这一刻"))
         go.add_css_class("suggested-action")
         go.connect("clicked", self._go)
         for b in (now_btn, cancel, go):
@@ -278,7 +284,7 @@ class CityDialog(Gtk.Window):
     def __init__(self, parent, on_pick, on_notice=None, current=None):
         super().__init__(modal=True, transient_for=parent, default_width=470,
                          default_height=520)
-        self.set_title("换一扇窗")
+        self.set_title(_("换一扇窗"))
         self.on_pick = on_pick
         self.on_notice = on_notice      # 一句话提示（时区没查到之类），可以为空
         self.current = current          # 现在朝着的那个城市（列表里标出来）
@@ -287,16 +293,17 @@ class CityDialog(Gtk.Window):
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         header = Adw.HeaderBar()
-        header.set_title_widget(Adw.WindowTitle(title="换一扇窗",
-                                                subtitle="选择你想看的那片天空"))
+        header.set_title_widget(Adw.WindowTitle(title=_("换一扇窗"),
+                                                subtitle=_("选择你想看的那片天空")))
         box.append(header)
 
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
                         margin_top=6, margin_bottom=14, margin_start=14, margin_end=14)
-        self.entry = Gtk.SearchEntry(placeholder_text="搜索城市，例如 西安 / Kyoto / 里斯本")
+        self.entry = Gtk.SearchEntry(
+            placeholder_text=_("搜索城市，例如 西安 / Kyoto / 里斯本"))
         inner.append(self.entry)
 
-        self.status = Gtk.Label(label="输入城市名开始搜索", xalign=0)
+        self.status = Gtk.Label(label=_("输入城市名开始搜索"), xalign=0)
         self.status.add_css_class("dim-label")
         inner.append(self.status)
 
@@ -307,18 +314,18 @@ class CityDialog(Gtk.Window):
         sw.set_child(self.listbox)
         inner.append(sw)
 
-        manual = Gtk.Expander(label="或者，直接输入经纬度")
+        manual = Gtk.Expander(label=_("或者，直接输入经纬度"))
         mbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
                        margin_top=8, margin_bottom=4)
-        self.lat_entry = Gtk.Entry(placeholder_text="纬度 34.34")
-        self.lon_entry = Gtk.Entry(placeholder_text="经度 108.94")
+        self.lat_entry = Gtk.Entry(placeholder_text=_("纬度 34.34"))
+        self.lon_entry = Gtk.Entry(placeholder_text=_("经度 108.94"))
         self.lat_entry.set_hexpand(True)
         self.lon_entry.set_hexpand(True)
         mbox.append(self.lat_entry)
         mbox.append(self.lon_entry)
         manual.set_child(mbox)
         inner.append(manual)
-        self.manual_btn = Gtk.Button(label="使用这组坐标")
+        self.manual_btn = Gtk.Button(label=_("使用这组坐标"))
         self.manual_btn.connect("clicked", self._manual)
         inner.append(self.manual_btn)
 
@@ -342,11 +349,11 @@ class CityDialog(Gtk.Window):
         if self._searching:
             return False
         self._searching = True
-        self.status.set_text("正在搜索…")
+        self.status.set_text(_("正在搜索…"))
 
         def worker():
             try:
-                rows = geocode(text, 8)
+                rows = geocode(text, 8, language=i18n.language())
             except Exception as exc:            # 网络错误
                 rows = [{"error": str(exc)}]
             to_main(self._fill, rows)
@@ -360,12 +367,13 @@ class CityDialog(Gtk.Window):
             self.listbox.remove(child)
         real = [r for r in rows if "error" not in r]
         if not real:
-            self.status.set_text("没找到 · 可能是网络不通，试试直接输入经纬度")
+            self.status.set_text(_("没找到 · 可能是网络不通，试试直接输入经纬度"))
             return False
         if any("error" in r for r in rows):
-            self.status.set_text("网络不通，结果可能不完整")
+            self.status.set_text(_("网络不通，结果可能不完整"))
         else:
-            self.status.set_text(f"找到 {len(real)} 个地方")
+            self.status.set_text(ntr("找到 {n} 个地方", "找到 {n} 个地方",
+                                     len(real)).format(n=len(real)))
         for r in real:
             title = r["name"]
             tz = r.get("timezone") or ""
@@ -373,7 +381,8 @@ class CityDialog(Gtk.Window):
             clock = _local_clock(tz)
             if clock:
                 diff = _offset_note(tz, self.current_tz)
-                bits.append(f"当地 {clock}" + (f"（{diff}）" if diff else ""))
+                bits.append(_("当地 {clock}").format(clock=clock)
+                            + (_("（{diff}）").format(diff=diff) if diff else ""))
             sub = " · ".join(bits)
             row = Adw.ActionRow(title=title, subtitle=sub or "—", activatable=True)
             here = bool(self.current
@@ -382,7 +391,7 @@ class CityDialog(Gtk.Window):
             row.add_prefix(Gtk.Image.new_from_icon_name(
                 "emblem-ok-symbolic" if here else "mark-location-symbolic"))
             if here:
-                tag = Gtk.Label(label="正在看")
+                tag = Gtk.Label(label=_("正在看"))
                 tag.add_css_class("accent")
                 row.add_suffix(tag)
             row.set_tooltip_text(f"{r['lat']:.4f}, {r['lon']:.4f}"
@@ -407,14 +416,14 @@ class CityDialog(Gtk.Window):
             lat = float(self.lat_entry.get_text().strip())
             lon = float(self.lon_entry.get_text().strip())
         except ValueError:
-            self.status.set_text("经纬度需要是数字，例如 34.34 与 108.94")
+            self.status.set_text(_("经纬度需要是数字，例如 34.34 与 108.94"))
             return
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            self.status.set_text("纬度要在 ±90 之间，经度要在 ±180 之间")
+            self.status.set_text(_("纬度要在 ±90 之间，经度要在 ±180 之间"))
             return
         # 时区要联网问一次（IANA 名字），否则按经度取整的固定偏移在欧洲/北美
         # 夏天会差整整一小时——网络不通时退回那个偏移，并在状态栏写清楚。
-        self.status.set_text("正在按经纬度确定时区…")
+        self.status.set_text(_("正在按经纬度确定时区…"))
         self.manual_btn.set_sensitive(False)
 
         def worker():
@@ -427,11 +436,13 @@ class CityDialog(Gtk.Window):
         guessed = not tz
         if not tz:
             tz = fallback_timezone(lon)
-        self.on_pick(cfgmod.Location(name=f"{lat:.2f}, {lon:.2f}", admin="自定义坐标",
+        self.on_pick(cfgmod.Location(name=f"{lat:.2f}, {lon:.2f}",
+                                     admin=_("自定义坐标"),
                                      country="", lat=lat, lon=lon, timezone=tz))
         if guessed:
             # 窗口这就关了，把话交给主窗口说（toast 会跟着新城市显示）
             if self.on_notice:
-                self.on_notice("没连上时区服务，先按经度取整时区；夏令时期间可能差一小时")
+                self.on_notice(_("没连上时区服务，先按经度取整时区；"
+                                 "夏令时期间可能差一小时"))
         self.close()
         return False

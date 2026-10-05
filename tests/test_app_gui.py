@@ -76,6 +76,9 @@ class TestGuiSmoke(unittest.TestCase):
             self.assertEqual(payload["info_rects_when_hidden"], 0, detail)
             self.assertEqual(payload["tray_activate"], "ok", detail)
             self.assertEqual(payload["tick_errors_after"], 0, detail)
+            # 语言与地区那一组探针也要跑到
+            for key in ("language_en", "units_imperial", "timeformat_h12"):
+                self.assertIn(key, payload, f"探针没跑到 {key}{detail}")
         finally:
             xvfb.terminate()
             try:

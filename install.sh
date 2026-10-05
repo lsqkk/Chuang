@@ -22,6 +22,14 @@ if [ -n "$MISSING" ]; then
   echo "  需要安装：$MISSING"
   sudo apt-get install -y $MISSING
 fi
+# 中日文界面要 CJK 字体（缺了会画成方框）
+if command -v fc-list >/dev/null 2>&1 && [ -z "$(fc-list :lang=ja 2>/dev/null)" ]; then
+  echo "  可选：安装 fonts-noto-cjk（中日文字体，缺了会显示成方框）"
+  sudo apt-get install -y fonts-noto-cjk || true
+fi
+
+echo "▸ 编译译文"
+python3 "$SRC/tools/i18n.py" compile
 # 置顶功能需要 python3-xlib（可选）
 if ! python3 -c "import Xlib" >/dev/null 2>&1; then
   echo "  可选：安装 python3-xlib 以支持「窗口置顶」"

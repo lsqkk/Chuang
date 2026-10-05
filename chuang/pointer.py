@@ -24,6 +24,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk  # noqa: E402
 
+from .i18n import tr as _
+
 
 class Pointer:
     """"这扇窗怎么读鼠标"。窗口把几个控制器的信号接到这里的方法上。"""
@@ -89,7 +91,7 @@ class Pointer:
         tx, ty, tw, th = ui.toast_rect
         if tw > 0 and tx <= x <= tx + tw and ty <= y <= ty + th:
             if ui.toast_detail:
-                win._show_detail("详情", ui.toast_detail)
+                win._show_detail(_("详情"), ui.toast_detail)
             else:                       # 点一下就把这条提示收掉
                 ui.toast_until = 0.0
                 win.area.queue_draw()

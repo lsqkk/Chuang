@@ -21,7 +21,8 @@ import gi
 gi.require_version("Pango", "1.0")
 from gi.repository import Pango  # noqa: E402
 
-from ..scene import Scene, compass, duration_zh, human_hint, phase_name_simple
+from .. import i18n
+from ..scene import Scene, compass, human_hint, phase_name_simple
 from ..weather import uv_text
 from .core import PainterCore
 from .paint import (clamp, draw_icon, draw_text, ink_baseline, rounded_rect,
@@ -55,19 +56,24 @@ class CardLayer(PainterCore):
         rows: list[FactRow] = []
         noon = ev.get("noon")
         if scene.sun_alt > -0.9:
-            rows.append(FactRow("sun", "太阳", f"{compass(scene.sun_az)} {scene.sun_az:.0f}°",
-                                f"仰角 {scene.sun_alt:.1f}°", "open", noon))
+            rows.append(FactRow("sun", i18n.tr("太阳"),
+                                f"{compass(scene.sun_az)} {i18n.fmt_num(scene.sun_az)}°",
+                                i18n.tr("仰角 {v}°").format(
+                                    v=i18n.fmt_num(scene.sun_alt, 1)),
+                                "open", noon))
         else:
             sunr_ = ev.get("sunrise")
             rising = bool(sunr_ and scene.when < sunr_)
-            rows.append(FactRow("sunrise" if rising else "sunset", "太阳",
-                                f"在{compass(scene.sun_az)}方地平线下",
-                                "还没升起" if rising else "已经落下", "open", noon))
+            rows.append(FactRow("sunrise" if rising else "sunset", i18n.tr("太阳"),
+                                i18n.tr("在{side}方地平线下").format(
+                                    side=compass(scene.sun_az)),
+                                i18n.tr("还没升起") if rising else i18n.tr("已经落下"),
+                                "open", noon))
         sunr = ev.get("sunrise")
         golden = ev.get("golden_morning_end")
-        rows.append(FactRow("sunrise", "日出",
-                    sunr.strftime("%H:%M") if sunr else "极昼 / 极夜",
-                            f"金色时刻至 {golden.strftime('%H:%M')}"
+        rows.append(FactRow("sunrise", i18n.tr("日出"),
+                    i18n.clock(sunr) if sunr else i18n.tr("极昼 / 极夜"),
+                            i18n.tr("金色时刻至 {time}").format(time=i18n.clock(golden))
                             if sunr and golden else "",
                             "open", sunr))
         suns = ev.get("sunset")
@@ -76,42 +82,50 @@ class CardLayer(PainterCore):
         # 话了（同一张卡上同一件事说两遍，是"没有取舍"最典型的样子）。
         # 换成傍晚金色时刻，那是另一件值得知道的事。
         gold_pm = ev.get("golden_evening_start")
-        sunset_note = (f"金色时刻 {gold_pm.strftime('%H:%M')} 起"
+        sunset_note = (i18n.tr("金色时刻 {time} 起").format(time=i18n.clock(gold_pm))
                        if gold_pm and gold_pm < (suns or gold_pm) else "")
-        rows.append(FactRow("sunset", "日落",
-                            suns.strftime("%H:%M") if suns else "极昼 / 极夜",
-                            sunset_note or ("今天已过去" if suns and not left else ""),
+        rows.append(FactRow("sunset", i18n.tr("日落"),
+                            i18n.clock(suns) if suns else i18n.tr("极昼 / 极夜"),
+                            sunset_note or (i18n.tr("今天已过去")
+                                            if suns and not left else ""),
                             "open", suns))
         mr, ms = ev.get("moonrise"), ev.get("moonset")
         note = " · ".join(x for x in (
-            f"月出 {mr.strftime('%H:%M')}" if mr else "",
-            f"月落 {ms.strftime('%H:%M')}" if ms else "") if x)
-        rows.append(FactRow("moon", "月亮",
-                            f"{phase_name_simple(scene.moon_phase)} {scene.moon_illum * 100:.0f}%",
+            i18n.tr("月出 {time}").format(time=i18n.clock(mr)) if mr else "",
+            i18n.tr("月落 {time}").format(time=i18n.clock(ms)) if ms else "") if x)
+        rows.append(FactRow("moon", i18n.tr("月亮"),
+                            i18n.tr("{phase} {pct}%").format(
+                                phase=phase_name_simple(scene.moon_phase),
+                                pct=i18n.fmt_num(scene.moon_illum * 100)),
                             note, "open", mr or ms))
         if scene.has_weather:
             # 说"多大雨"用真实雨量那一句（毛毛雨 / 小雨 / 中雨…），代码表那套
             # 说法只在没有雨量的时候顶上；雨量本身也写在旁边，看得见差别。
             what = scene.precip_label or scene.weather_text
-            note = f"云量 {scene.cloud:.0f}%"
+            note = i18n.tr("云量 {v}%").format(v=i18n.fmt_num(scene.cloud))
             if scene.precip_kind != "none" and scene.precip_mm > 0:
-                note += f" · {scene.precip_mm:.1f} mm/时"
-            rows.append(FactRow(self._weather_icon(scene), "窗外",
-                                f"{what} {scene.temp:.0f}°C", note, "detail"))
+                note += " · " + i18n.precip(scene.precip_mm)
+            rows.append(FactRow(self._weather_icon(scene), i18n.tr("窗外"),
+                                f"{what} {i18n.temp_full(scene.temp)}", note, "detail"))
             if scene.wind_speed:
-                rows.append(FactRow("wind", "风",
-                                    f"{compass(scene.wind_dir)} {scene.wind_speed:.1f} km/h",
-                                    f"湿度 {scene.humidity:.0f}%" if scene.humidity else "",
+                rows.append(FactRow("wind", i18n.tr("风"),
+                                    f"{compass(scene.wind_dir)} "
+                                    f"{i18n.speed(scene.wind_speed)}",
+                                    i18n.tr("湿度 {v}%").format(
+                                        v=i18n.fmt_num(scene.humidity))
+                                    if scene.humidity else "",
                                     "detail"))
         elif scene.weather_nodata:
             # 跳到远一点的日子：这一天还没有预报，就直说没有
-            rows.append(FactRow("cloud", "窗外", "这天还没有预报",
-                                "Open-Meteo 只给 16 天以内", "detail"))
+            rows.append(FactRow("cloud", i18n.tr("窗外"), i18n.tr("这天还没有预报"),
+                                i18n.tr("Open-Meteo 只给 16 天以内"), "detail"))
         elif scene.weather_disabled:
             # 用户自己关的天气，别写成"未联网"——那会把人指去查网络
-            rows.append(FactRow("info", "窗外", "你关掉了天气 · 只看天", "", "detail"))
+            rows.append(FactRow("info", i18n.tr("窗外"),
+                                i18n.tr("你关掉了天气 · 只看天"), "", "detail"))
         else:
-            rows.append(FactRow("cloud", "窗外", "未联网 · 仅天文模式", "", "detail"))
+            rows.append(FactRow("cloud", i18n.tr("窗外"),
+                                i18n.tr("未联网 · 仅天文模式"), "", "detail"))
         return rows
 
     def _draw_info(self, cr, w, h, scene: Scene, az0, fov, direct):
@@ -157,12 +171,13 @@ class CardLayer(PainterCore):
             int(w), int(h),
             scene.when.strftime("%Y-%m-%d %H:%M"), scene.preview, scene.period_name,
             scene.location_name, scene.location_label,
+            i18n.units_tag(),          # 换语言 / 换单位，卡上的字都得重画
             self.ui.info_hover, bool(self.ui.info_compact),
             # 画不画那些"能点的东西"也是看得见的差别（壁纸上的卡片没有鼠标）
             bool(self.ui.info_buttons),
             # 正有一枪在飞的时候，脚注与刷新图标都换了样子（看得见的差别）
             bool(self.ui.weather_busy),
-            hover_dt.strftime("%H:%M") if hover_dt else "",
+            i18n.clock(hover_dt) if hover_dt else "",
             scene.sun_alt >= -0.9, round(scene.moon_phase, 3),
             scene.has_weather, scene.weather_disabled, scene.weather_stale,
             scene.weather_nodata, scene.weather_now, int(scene.weather_at),
@@ -241,7 +256,7 @@ class CardLayer(PainterCore):
         arrow_w = 11 * scale if self.ui.info_buttons else 0.0
         widest = max((badge_w + 7 * scale
                       + max(36 * scale,
-                            self._text_w(r.label, self.F_LABEL * text_scale) + 4 * scale)
+                            self._text_w(r.label, self.F_LABEL * text_scale) + 6 * scale)
                       + self._text_w(r.value, self.F_VALUE * text_scale)
                       + 4 * scale + arrow_w
                       for r in grid), default=0.0)
@@ -335,7 +350,7 @@ class CardLayer(PainterCore):
             return "", "", ""
         if not scene.has_weather:
             return "", hero.value, hero.note or ""
-        return (f"{scene.temp:.0f}°",
+        return (i18n.temp(scene.temp),
                 scene.precip_label or scene.weather_text or hero.value,
                 self._hero_sub(scene))
 
@@ -368,8 +383,7 @@ class CardLayer(PainterCore):
         它跟底下的脚注一样是"能说多少说多少"——宁可少写"金色时刻"，也不让它
         伸出卡片外面（小窗口里以前会探出边框，被离屏图硬切掉半句话）。
         """
-        weekday = "一二三四五六日"[scene.when.weekday()]
-        head = f"{scene.when.month} 月 {scene.when.day} 日 · 周{weekday}"
+        head = i18n.date_long(scene.when)
         for variant in (f"{head} · {scene.period_name}", head,
                         f"{scene.when.month}/{scene.when.day}"):
             if self._text_w(variant, size) <= room:
@@ -387,7 +401,7 @@ class CardLayer(PainterCore):
         给的读数，比如紫外线与气压），`rest` 只是"哪些行归这一层"的分类结果。
         """
         rows = self._rows(scene)
-        hero = next((r for r in rows if r.label == "窗外"), None)
+        hero = next((r for r in rows if r.label == i18n.tr("窗外")), None)
         grid = [r for r in rows if r is not hero and r.action == "open"]
         rest = [r for r in rows if r is not hero and r.action != "open"]
         rest = [r for r in rest if r.action == "detail"] or rest
@@ -406,24 +420,24 @@ class CardLayer(PainterCore):
             return out
         if not scene.weather_now:
             # 看的是别的日子：逐小时表里只有云、天气、气温、降水
-            out.append(("云量", f"{scene.cloud:.0f}%"))
+            out.append((i18n.tr("云量"), f"{i18n.fmt_num(scene.cloud)}%"))
             if scene.precip_kind != "none":
-                out.append(("降水", f"{scene.precip_mm:.1f} mm/时"))
+                out.append((i18n.tr("降水"), i18n.precip(scene.precip_mm)))
             return out
-        out.append(("湿度", f"{scene.humidity:.0f}%"))
+        out.append((i18n.tr("湿度"), f"{i18n.fmt_num(scene.humidity)}%"))
         if scene.wind_speed:
-            out.append(("风", f"{compass(scene.wind_dir)} "
-                             f"{scene.wind_speed:.1f} km/h"))
+            out.append((i18n.tr("风"), f"{compass(scene.wind_dir)} "
+                                       f"{i18n.speed(scene.wind_speed)}"))
         if scene.precip_kind != "none" or scene.precip_mm > 0:
-            out.append(("降水", f"{scene.precip_mm:.1f} mm/时"))
+            out.append((i18n.tr("降水"), i18n.precip(scene.precip_mm)))
         if scene.visibility:
-            out.append(("能见度", f"{scene.visibility / 1000:.1f} km"))
+            out.append((i18n.tr("能见度"), i18n.dist(scene.visibility / 1000)))
         if scene.uv is not None:
-            out.append(("紫外线", uv_text(scene.uv)))
+            out.append((i18n.tr("紫外线"), uv_text(scene.uv)))
         if scene.pressure:
-            out.append(("气压", f"{scene.pressure:.0f} hPa"))
+            out.append((i18n.tr("气压"), i18n.pressure(scene.pressure)))
         if scene.dew is not None:
-            out.append(("露点", f"{scene.dew:.0f}°"))
+            out.append((i18n.tr("露点"), i18n.temp(scene.dew)))
         return out
 
     @staticmethod
@@ -435,12 +449,13 @@ class CardLayer(PainterCore):
         这种一眼假的东西（用户截图里就是这样）。云量是按那一刻插值出来的，
         什么时候都能写。几个小项之间用统一的间隔，不用"·"串（串起来太吵）。
         """
-        sub = [f"云量 {scene.cloud:.0f}%"]
+        sub = [i18n.tr("云量 {v}%").format(v=i18n.fmt_num(scene.cloud))]
         if scene.weather_now:
-            sub.insert(0, f"体感 {scene.apparent:.0f}°")
+            sub.insert(0, i18n.tr("体感 {v}").format(v=i18n.temp(scene.apparent)))
         if (scene.temp_max is not None and scene.temp_min is not None
                 and scene.temp_max - scene.temp_min >= 1.0):
-            sub.append(f"今日 {scene.temp_min:.0f}~{scene.temp_max:.0f}°")
+            sub.append(i18n.tr("今日 {low}~{high}").format(
+                low=i18n.temp(scene.temp_min), high=i18n.temp(scene.temp_max)))
         return "   ".join(sub)
 
     @staticmethod
@@ -500,36 +515,43 @@ class CardLayer(PainterCore):
         except (OverflowError, OSError, ValueError):
             return ""
         if at.date() == scene.when.date():
-            return at.strftime("%H:%M")
-        return at.strftime("%m-%d %H:%M")
+            return i18n.clock(at)
+        return f"{at:%m-%d} {i18n.clock(at)}"
 
     def _foot_text(self, scene: Scene, cr, room: float, size: float) -> str:
         """卡片底部那一行：剩多少宽度就说多少话（宁可少说，也不挤到按钮底下）。"""
         stamp = self._weather_stamp(scene)
+        # 这个局部函数叫 `tr`：`tools/i18n.py` 认得这个名字，才能把这些词抽出来
+        # （叫 `t` 的话它们会悄悄漏进 .pot，翻译永远补不上）。
+        def tr(msgid, **kw):
+            return i18n.tr(msgid).format(**kw) if kw else i18n.tr(msgid)
         if self.ui.weather_busy:
             # 刚按过 R（或刚换过城市）：先给一句"正在问"，别让这一秒像卡住了。
             # 结果回来之后（成功 / 失败都算）心跳会把这一条换回下面的说法。
-            options = ["天文 · 本地计算　　正在问一次真实的天气…", "正在问天气…"]
+            options = [tr("天文 · 本地计算　　正在问一次真实的天气…"), tr("正在问天气…")]
         elif scene.has_weather and scene.weather_stale:
-            head = (f"网络不通 · 显示上次天气（{stamp}）" if stamp
-                    else "网络不通 · 显示上次天气")
-            options = [head, "网络不通 · 上次的天气"]
+            head = (tr("网络不通 · 显示上次天气（{stamp}）", stamp=stamp) if stamp
+                    else tr("网络不通 · 显示上次天气"))
+            options = [head, tr("网络不通 · 上次的天气")]
         elif scene.has_weather and scene.weather_now and stamp:
-            options = [f"天文 · 本地计算　　天气更新于 {stamp} · Open-Meteo",
-                       f"天气更新于 {stamp} · Open-Meteo",
-                       f"天气更新于 {stamp}"]
+            options = [tr("天文 · 本地计算　　天气更新于 {stamp} · Open-Meteo",
+                         stamp=stamp),
+                       tr("天气更新于 {stamp} · Open-Meteo", stamp=stamp),
+                       tr("天气更新于 {stamp}", stamp=stamp)]
         elif scene.has_weather and scene.weather_now:
             # 就是此刻那份天气，只是不知道是什么时候问回来的（假数据 / 老缓存）
-            options = ["天文 · 本地计算　　天气 · Open-Meteo", "天气 · Open-Meteo"]
+            options = [tr("天文 · 本地计算　　天气 · Open-Meteo"),
+                       tr("天气 · Open-Meteo")]
         elif scene.has_weather:
-            options = ["天文 · 本地计算　　这一天的逐小时预报",
-                       "这一天的逐小时预报"]
+            options = [tr("天文 · 本地计算　　这一天的逐小时预报"),
+                       tr("这一天的逐小时预报")]
         elif scene.weather_nodata:
-            options = ["天文 · 本地计算　　这天的预报还没问到", "这天的预报还没问到"]
+            options = [tr("天文 · 本地计算　　这天的预报还没问到"),
+                       tr("这天的预报还没问到")]
         elif scene.weather_disabled:
-            options = ["天文 · 本地计算　　你关掉了天气", "只看天"]
+            options = [tr("天文 · 本地计算　　你关掉了天气"), tr("只看天")]
         else:
-            options = ["天文 · 本地计算　　天气未接入", "天文 · 本地计算"]
+            options = [tr("天文 · 本地计算　　天气未接入"), tr("天文 · 本地计算")]
         for text in options[:-1]:
             if draw_text(cr, text, 0, -1000, size, (255, 255, 255), 0.0)[0] <= room:
                 return text

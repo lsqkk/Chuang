@@ -142,8 +142,10 @@ def _now_in(tz: str) -> datetime:
         return datetime.now().astimezone()
 
 
-def geocode(query: str, count: int = 6) -> list[dict]:
-    params = {"name": query, "count": str(count), "language": "zh", "format": "json"}
+def geocode(query: str, count: int = 6, language: str = "zh") -> list[dict]:
+    """按城市名查坐标。`language` 决定结果里的地名用哪种文字（Open-Meteo 支持）。"""
+    params = {"name": query, "count": str(count),
+              "language": language or "en", "format": "json"}
     data = _fetch_json(GEOCODE_API + "?" + urllib.parse.urlencode(params))
     out = []
     for r in data.get("results") or []:

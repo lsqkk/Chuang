@@ -1,0 +1,1532 @@
+# Traduction française pour 「窗 · Chuang」.
+# Les msgid sont le texte source chinois (voir po/chuang.pot).
+msgid ""
+msgstr ""
+"Project-Id-Version: chuang 1.3.0\n"
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+# ---- Fenêtre et zone de notification ----
+msgid "窗"
+msgstr "Chuang"
+
+msgid "窗外的天空"
+msgstr "Le ciel derrière la fenêtre"
+
+msgid "更多"
+msgstr "Plus"
+
+msgid "让这扇窗一直浮在最上面"
+msgstr "Garder cette fenêtre au premier plan"
+
+msgid "需要 python3-xlib 才能置顶"
+msgstr "python3-xlib est requis pour rester au-dessus"
+
+msgid "置顶需要先安装 python3-xlib"
+msgstr "Rester au-dessus nécessite python3-xlib"
+
+msgid "已置顶，可以缩成一条小窗放在角落"
+msgstr "Épinglé au-dessus — vous pouvez le réduire dans un coin"
+
+msgid "取消置顶"
+msgstr "Épinglage retiré"
+
+msgid "显示「窗」"
+msgstr "Afficher Chuang"
+
+msgid "「窗」已经在运行；这次只把原来那扇窗叫到了前面。"
+msgstr "Chuang est déjà en cours d'exécution ; la fenêtre existante a été mise au premier plan."
+
+# ---- Menus ----
+msgid "换一扇窗（城市）…"
+msgstr "Changer de ville…"
+
+msgid "跟随真实天气"
+msgstr "Suivre la vraie météo"
+
+msgid "沉浸全屏"
+msgstr "Plein écran"
+
+msgid "窗口置顶"
+msgstr "Toujours au-dessus"
+
+msgid "把这扇窗存成图片…"
+msgstr "Enregistrer cette vue en image…"
+
+msgid "场景"
+msgstr "Scène"
+
+msgid "全部画出来（默认）"
+msgstr "Tout dessiner (par défaut)"
+
+msgid "只看天空（收起街上的一切）"
+msgstr "Ciel seul (masquer la rue)"
+
+msgid "跳到某天某时…"
+msgstr "Aller à une date et une heure…"
+
+msgid "桌面壁纸"
+msgstr "Fond d'écran"
+
+msgid "显示"
+msgstr "Affichage"
+
+msgid "开机与关窗"
+msgstr "Démarrage et fermeture"
+
+msgid "关于与帮助"
+msgstr "À propos et aide"
+
+msgid "退出"
+msgstr "Quitter"
+
+msgid "下载并安装 {tag}"
+msgstr "Télécharger et installer {tag}"
+
+msgid "只下载 .deb 安装包"
+msgstr "Télécharger seulement le .deb"
+
+msgid "打开发布页"
+msgstr "Ouvrir la page des versions"
+
+msgid "跳过这个版本"
+msgstr "Ignorer cette version"
+
+msgid "有新版本 {tag} · 查看"
+msgstr "Nouvelle version {tag} · voir"
+
+msgid "行人"
+msgstr "Piétons"
+
+msgid "车辆"
+msgstr "Circulation"
+
+msgid "行道树"
+msgstr "Arbres"
+
+msgid "路灯"
+msgstr "Réverbères"
+
+msgid "天上的飞机"
+msgstr "Avions"
+
+msgid "城市天际线"
+msgstr "Ligne d'horizon"
+
+msgid "云"
+msgstr "Nuages"
+
+msgid "星空"
+msgstr "Étoiles"
+
+msgid "雨雪与闪电"
+msgstr "Pluie, neige et éclairs"
+
+msgid "窗台盆栽"
+msgstr "Plante du rebord"
+
+msgid "盆栽随风摇曳"
+msgstr "La plante bouge au vent"
+
+msgid "把此刻的天空设为桌面壁纸"
+msgstr "Mettre le ciel actuel en fond d'écran"
+
+msgid "让壁纸跟着此刻走（定时重画）"
+msgstr "Faire suivre le ciel au fond d'écran"
+
+msgid "每 10 秒"
+msgstr "Toutes les 10 s"
+
+msgid "每 30 秒"
+msgstr "Toutes les 30 s"
+
+msgid "每 1 分钟"
+msgstr "Chaque minute"
+
+msgid "壁纸跟随的节奏"
+msgstr "Rythme du fond d'écran"
+
+msgid "生成整天的动态壁纸（15 分钟一帧）"
+msgstr "Générer un fond d'écran animé sur la journée"
+
+msgid "壁纸上显示「此刻的事实」"
+msgstr "Afficher la fiche « en ce moment » sur le fond"
+
+msgid "跟窗口一致"
+msgstr "Comme la fenêtre"
+
+msgid "精简一条"
+msgstr "Bandeau compact"
+
+msgid "完整版"
+msgstr "Version complète"
+
+msgid "壁纸上信息卡的版式"
+msgstr "Disposition de la fiche du fond"
+
+msgid "壁纸上显示「今日天色」长卷"
+msgstr "Afficher le ruban du jour sur le fond"
+
+msgid "还原成原来的壁纸"
+msgstr "Restaurer le fond d'origine"
+
+msgid "壁纸诊断（时间不对时用）…"
+msgstr "Diagnostic du fond d'écran…"
+
+msgid "显示「此刻的事实」（空格）"
+msgstr "Afficher « en ce moment » (Espace)"
+
+msgid "信息卡精简模式（C）"
+msgstr "Fiche compacte (C)"
+
+msgid "显示「今日天色」长卷"
+msgstr "Afficher le ruban du jour"
+
+msgid "省电 · 24 帧"
+msgstr "Économie · 24 ips"
+
+msgid "流畅 · 30 帧"
+msgstr "Fluide · 30 ips"
+
+msgid "均衡 · 45 帧"
+msgstr "Équilibré · 45 ips"
+
+msgid "顺滑 · 60 帧（默认）"
+msgstr "Très fluide · 60 ips (défaut)"
+
+msgid "高刷 · 120 帧"
+msgstr "Haut taux · 120 ips"
+
+msgid "画面流畅度（帧率）"
+msgstr "Fréquence d'images"
+
+msgid "语言与地区"
+msgstr "Langue et région"
+
+msgid "界面语言"
+msgstr "Langue"
+
+msgid "跟随系统"
+msgstr "Suivre le système"
+
+msgid "测量单位"
+msgstr "Unités"
+
+msgid "跟随语言"
+msgstr "Suivre la langue"
+
+msgid "公制"
+msgstr "Métrique"
+
+msgid "英制"
+msgstr "Impérial"
+
+msgid "公制（°C · km/h）"
+msgstr "Métrique (°C · km/h)"
+
+msgid "英制（°F · mph）"
+msgstr "Impérial (°F · mph)"
+
+msgid "时间制"
+msgstr "Format de l'heure"
+
+msgid "24 小时制"
+msgstr "24 heures"
+
+msgid "12 小时制"
+msgstr "12 heures"
+
+msgid "界面语言：{name}"
+msgstr "Langue : {name}"
+
+msgid "测量单位：{name}"
+msgstr "Unités : {name}"
+
+msgid "时间制：{name}"
+msgstr "Format de l'heure : {name}"
+
+msgid "开机时自动打开"
+msgstr "Ouvrir à la connexion"
+
+msgid "开机时直接进托盘（不弹窗）"
+msgstr "Démarrer dans la zone de notification"
+
+msgid "关窗时：问我"
+msgstr "À la fermeture : demander"
+
+msgid "关窗时：最小化到托盘"
+msgstr "À la fermeture : réduire dans la zone"
+
+msgid "关窗时：直接退出"
+msgstr "À la fermeture : quitter"
+
+msgid "检查更新…"
+msgstr "Rechercher des mises à jour…"
+
+msgid "自动检查更新"
+msgstr "Rechercher les mises à jour automatiquement"
+
+msgid "问题反馈 / 提个建议（GitHub）"
+msgstr "Signaler un problème (GitHub)"
+
+msgid "作者的主页（GitHub）"
+msgstr "Page de l'auteur (GitHub)"
+
+msgid "关于窗"
+msgstr "À propos de Chuang"
+
+msgid "重新启动「窗」"
+msgstr "Redémarrer Chuang"
+
+# ---- Messages ----
+msgid "窗外的天气会真实地出现在窗上"
+msgstr "La vraie météo apparaîtra désormais derrière la fenêtre"
+
+msgid "只看天，不看天气"
+msgstr "Le ciel seul, sans météo"
+
+msgid "今日淡淡的长卷回来了"
+msgstr "Le ruban du jour est de retour"
+
+msgid "收起长卷，窗外只剩景色"
+msgstr "Ruban masqué — il ne reste que la vue"
+
+msgid "{name}·{state}"
+msgstr "{name} · {state}"
+
+msgid "画出来了"
+msgstr "affiché"
+
+msgid "收起来了"
+msgstr "masqué"
+
+msgid "窗外的世界都回来了"
+msgstr "Tout le décor est de retour"
+
+msgid "街上收起来了 · 只剩天上那一片"
+msgstr "Rue masquée — il ne reste que le ciel"
+
+msgid "关闭窗口时：{name}"
+msgstr "À la fermeture : {name}"
+
+msgid "每次问你"
+msgstr "demander"
+
+msgid "最小化到托盘"
+msgstr "réduire dans la zone"
+
+msgid "直接退出"
+msgstr "quitter"
+
+msgid "系统托盘不可用，这次先直接退出了"
+msgstr "La zone de notification est indisponible ; Chuang va quitter cette fois"
+
+msgid "还在托盘里看着你的天空"
+msgstr "Toujours à surveiller le ciel depuis la zone de notification"
+
+msgid "每次开机，这扇窗都会自己打开"
+msgstr "Cette fenêtre s'ouvrira à chaque connexion"
+
+msgid "每次开机，这扇窗会自己待在托盘里"
+msgstr "Cette fenêtre attendra dans la zone de notification à chaque connexion"
+
+msgid "已取消开机自启"
+msgstr "Démarrage automatique désactivé"
+
+msgid "开机时直接进托盘，不弹窗"
+msgstr "Au démarrage, rester discrètement dans la zone"
+
+msgid "开机时正常打开窗口"
+msgstr "Au démarrage, ouvrir la fenêtre normalement"
+
+msgid "打不开浏览器，地址是 {url}"
+msgstr "Impossible d'ouvrir un navigateur. L'adresse est {url}"
+
+msgid "现在这扇窗朝着 {place}"
+msgstr "Cette fenêtre regarde maintenant {place}"
+
+msgid "正在看 {time} 的窗外 · Esc 回到此刻"
+msgstr "Ciel de {time} · Échap pour revenir à maintenant"
+
+msgid "正在看 {date} {time} 的窗外 · Esc 回到此刻"
+msgstr "Ciel du {date} à {time} · Échap pour revenir à maintenant"
+
+msgid "没能写出图片：{err}"
+msgstr "Impossible d'enregistrer l'image : {err}"
+
+msgid "存好了：{name}"
+msgstr "Enregistré : {name}"
+
+msgid "这一帧存在：\n{path}\n\n{w}×{h}，和你此刻看到的一样。\n（{when} · {place}）"
+msgstr "Cette image est enregistrée dans :\n{path}\n\n{w}×{h}, exactement ce que vous voyez.\n({when} · {place})"
+
+msgid "先按你的时区猜了「{name}」，不对的话：菜单 → 换一扇窗"
+msgstr "« {name} » deviné d'après votre fuseau ; sinon : menu → Changer de ville"
+
+msgid "{place}，{period}：{hint}"
+msgstr "{place}, {period} : {hint}"
+
+msgid "空格 隐藏信息卡 · 点上面的日出/日落可以跳过去看 · 拖底部长卷预览今天的天色 · 菜单 → 场景 里能收起街上的车与人"
+msgstr "Espace masque la fiche · cliquez sur lever/coucher pour y aller · faites glisser le ruban du bas pour prévisualiser la journée · menu → Scène pour masquer la rue"
+
+# ---- Boîtes de dialogue ----
+msgid "关掉「窗」吗？"
+msgstr "Fermer Chuang ?"
+
+msgid "要把「窗」关掉吗？"
+msgstr "Voulez-vous fermer Chuang ?"
+
+msgid "留在托盘里的话，它还会继续把壁纸跟着天空更新；托盘图标点一下就能再打开。"
+msgstr "S'il reste dans la zone de notification, il continuera de faire suivre le fond d'écran au ciel ; cliquez sur l'icône pour le rouvrir."
+
+msgid "你的桌面壁纸正跟着此刻更新。留在托盘里它才会一直更新；直接退出的话，壁纸会停在现在这一刻。托盘图标点一下就能再打开。"
+msgstr "Votre fond d'écran suit le ciel en ce moment. Il ne continuera que si Chuang reste dans la zone de notification ; si vous quittez, il se figera sur cet instant. Cliquez sur l'icône pour le rouvrir."
+
+msgid "这台机器的系统托盘不可用（需要 GNOME 的 AppIndicator 扩展），只能直接退出。"
+msgstr "La zone de notification est indisponible sur cette machine (extension AppIndicator de GNOME requise) ; Chuang ne peut que quitter."
+
+msgid "记住我的选择（之后可在菜单里改）"
+msgstr "Se souvenir de mon choix (modifiable dans le menu)"
+
+msgid "最小化到托盘"
+msgstr "réduire dans la zone"
+
+msgid "直接退出（壁纸会停住）"
+msgstr "Quitter (le fond d'écran se figera)"
+
+msgid "复制全部"
+msgstr "Tout copier"
+
+msgid "可以选中，也可以一键复制"
+msgstr "Sélectionnable, et copiable en un clic"
+
+msgid "关闭"
+msgstr "Fermer"
+
+msgid "已复制 ✓"
+msgstr "Copié ✓"
+
+msgid "详情"
+msgstr "Détails"
+
+msgid "跳到某一刻"
+msgstr "Aller à un instant"
+
+msgid "选好日期与时间，窗会停在那里"
+msgstr "Choisissez une date et une heure ; la fenêtre s'y arrêtera"
+
+msgid "时间"
+msgstr "Heure"
+
+msgid "提示：预览时窗里的天色停在你选的那一刻，但街上的人车、天上的云照常动。"
+msgstr "Astuce : en prévisualisation, le ciel se fige à l'instant choisi, mais les gens, la circulation et les nuages continuent de bouger."
+
+msgid "回到此刻"
+msgstr "Revenir à maintenant"
+
+msgid "取消"
+msgstr "Annuler"
+
+msgid "跳到这一刻"
+msgstr "Aller à cet instant"
+
+msgid "换一扇窗"
+msgstr "Changer de ville"
+
+msgid "选择你想看的那片天空"
+msgstr "Choisissez le ciel que vous voulez voir"
+
+msgid "搜索城市，例如 西安 / Kyoto / 里斯本"
+msgstr "Chercher une ville, ex. Kyoto / Lisbonne / 西安"
+
+msgid "输入城市名开始搜索"
+msgstr "Saisissez un nom de ville pour chercher"
+
+msgid "或者，直接输入经纬度"
+msgstr "Ou saisir les coordonnées"
+
+msgid "纬度 34.34"
+msgstr "Latitude 34.34"
+
+msgid "经度 108.94"
+msgstr "Longitude 108.94"
+
+msgid "使用这组坐标"
+msgstr "Utiliser ces coordonnées"
+
+msgid "正在搜索…"
+msgstr "Recherche…"
+
+msgid "没找到 · 可能是网络不通，试试直接输入经纬度"
+msgstr "Rien trouvé · peut-être hors ligne ; essayez les coordonnées"
+
+msgid "网络不通，结果可能不完整"
+msgstr "Réseau indisponible ; les résultats peuvent être incomplets"
+
+msgid "找到 {n} 个地方"
+msgid_plural "找到 {n} 个地方"
+msgstr[0] "{n} lieu trouvé"
+msgstr[1] "{n} lieux trouvés"
+
+msgid "当地 {clock}"
+msgstr "Heure locale {clock}"
+
+msgid "（{diff}）"
+msgstr " ({diff})"
+
+msgid "正在看"
+msgstr "Affiché"
+
+msgid "经纬度需要是数字，例如 34.34 与 108.94"
+msgstr "La latitude et la longitude doivent être des nombres, ex. 34.34 et 108.94"
+
+msgid "纬度要在 ±90 之间，经度要在 ±180 之间"
+msgstr "La latitude doit être entre ±90 et la longitude entre ±180"
+
+msgid "正在按经纬度确定时区…"
+msgstr "Détermination du fuseau horaire…"
+
+msgid "自定义坐标"
+msgstr "Coordonnées personnalisées"
+
+msgid "没连上时区服务，先按经度取整时区；夏令时期间可能差一小时"
+msgstr "Service de fuseau injoignable ; fuseau estimé d'après la longitude, décalage possible d'une heure en heure d'été"
+
+msgid "同时刻"
+msgstr "même heure"
+
+msgid "{h} 小时"
+msgstr "{h} h"
+
+msgid "{h} 小时半"
+msgstr "{h} h 30"
+
+msgid "快 {span}"
+msgstr "en avance de {span}"
+
+msgid "慢 {span}"
+msgstr "en retard de {span}"
+
+# ---- Fiche « en ce moment » ----
+msgid "太阳"
+msgstr "Soleil"
+
+msgid "日出"
+msgstr "Lever"
+
+msgid "日落"
+msgstr "Coucher"
+
+msgid "月亮"
+msgstr "Lune"
+
+msgid "窗外"
+msgstr "Dehors"
+
+msgid "风"
+msgstr "Vent"
+
+msgid "仰角 {v}°"
+msgstr "hauteur {v}°"
+
+msgid "在{side}方地平线下"
+msgstr "sous l'horizon au {side}"
+
+msgid "还没升起"
+msgstr "pas encore levé"
+
+msgid "已经落下"
+msgstr "déjà couché"
+
+msgid "极昼 / 极夜"
+msgstr "jour / nuit polaire"
+
+msgid "金色时刻至 {time}"
+msgstr "heure dorée jusqu'à {time}"
+
+msgid "金色时刻 {time} 起"
+msgstr "heure dorée à partir de {time}"
+
+msgid "今天已过去"
+msgstr "déjà passé"
+
+msgid "月出 {time}"
+msgstr "lever de lune {time}"
+
+msgid "月落 {time}"
+msgstr "coucher de lune {time}"
+
+msgid "{phase} {pct}%"
+msgstr "{phase}, {pct} %"
+
+msgid "云量 {v}%"
+msgstr "nuages {v} %"
+
+msgid "湿度 {v}%"
+msgstr "humidité {v} %"
+
+msgid "这天还没有预报"
+msgstr "Pas encore de prévision pour ce jour"
+
+msgid "Open-Meteo 只给 16 天以内"
+msgstr "Open-Meteo ne couvre que 16 jours"
+
+msgid "你关掉了天气 · 只看天"
+msgstr "Météo désactivée · ciel seul"
+
+msgid "未联网 · 仅天文模式"
+msgstr "Hors ligne · astronomie seule"
+
+msgid "现在"
+msgstr "Maintenant"
+
+msgid "今日 {low}~{high}"
+msgstr "Aujourd'hui {low}~{high}"
+
+msgid "体感 {v}"
+msgstr "Ressenti {v}"
+
+msgid "今日"
+msgstr "Aujourd'hui"
+
+msgid "云量"
+msgstr "Nuages"
+
+msgid "湿度"
+msgstr "Humidité"
+
+msgid "降水"
+msgstr "Précip."
+
+msgid "能见度"
+msgstr "Visibilité"
+
+msgid "紫外线"
+msgstr "UV"
+
+msgid "气压"
+msgstr "Pression"
+
+msgid "露点"
+msgstr "Point de rosée"
+
+msgid "此刻"
+msgstr "Maintenant"
+
+msgid "预览 {time}"
+msgstr "Aperçu {time}"
+
+msgid "还剩 {left}"
+msgstr "encore {left}"
+
+msgid "天文 · 本地计算　　正在问一次真实的天气…"
+msgstr "Astronomie · local　　 demande de la vraie météo…"
+
+msgid "正在问天气…"
+msgstr "Demande de météo…"
+
+msgid "网络不通 · 显示上次天气（{stamp}）"
+msgstr "Hors ligne · météo précédente ({stamp})"
+
+msgid "网络不通 · 显示上次天气"
+msgstr "Hors ligne · météo précédente"
+
+msgid "网络不通 · 上次的天气"
+msgstr "Hors ligne · météo précédente"
+
+msgid "天文 · 本地计算　　天气更新于 {stamp} · Open-Meteo"
+msgstr "Astronomie · local　　 météo mise à jour {stamp} · Open-Meteo"
+
+msgid "天气更新于 {stamp} · Open-Meteo"
+msgstr "Météo mise à jour {stamp} · Open-Meteo"
+
+msgid "天气更新于 {stamp}"
+msgstr "Météo mise à jour {stamp}"
+
+msgid "天文 · 本地计算　　天气 · Open-Meteo"
+msgstr "Astronomie · local　　 météo · Open-Meteo"
+
+msgid "天气 · Open-Meteo"
+msgstr "Météo · Open-Meteo"
+
+msgid "天文 · 本地计算　　这一天的逐小时预报"
+msgstr "Astronomie · local　　 prévisions horaires du jour"
+
+msgid "这一天的逐小时预报"
+msgstr "Prévisions horaires du jour"
+
+msgid "天文 · 本地计算　　这天的预报还没问到"
+msgstr "Astronomie · local　　 pas encore de prévision"
+
+msgid "这天的预报还没问到"
+msgstr "Pas encore de prévision"
+
+msgid "天文 · 本地计算　　你关掉了天气"
+msgstr "Astronomie · local　　 météo désactivée"
+
+msgid "只看天"
+msgstr "ciel seul"
+
+msgid "天文 · 本地计算　　天气未接入"
+msgstr "Astronomie · local　　 météo indisponible"
+
+msgid "天文 · 本地计算"
+msgstr "Astronomie · local"
+
+msgid "更新于 {stamp}"
+msgstr "mis à jour {stamp}"
+
+msgid "　·　详情"
+msgstr "　·　détails"
+
+msgid "正在预览 {time}　·　点这里回到此刻"
+msgstr "Aperçu de {time}　·　cliquez ici pour revenir à maintenant"
+
+# ---- Ciel et descriptions ----
+msgid "白天"
+msgstr "Jour"
+
+msgid "斜阳"
+msgstr "Soleil bas"
+
+msgid "金色时刻"
+msgstr "Heure dorée"
+
+msgid "暮色"
+msgstr "Crépuscule"
+
+msgid "夜色渐深"
+msgstr "Nuit qui tombe"
+
+msgid "夜"
+msgstr "Nuit"
+
+msgid "新月"
+msgstr "Nouvelle lune"
+
+msgid "蛾眉月"
+msgstr "Premier croissant"
+
+msgid "上弦月"
+msgstr "Premier quartier"
+
+msgid "盈凸月"
+msgstr "Gibbeuse croissante"
+
+msgid "满月"
+msgstr "Pleine lune"
+
+msgid "亏凸月"
+msgstr "Gibbeuse décroissante"
+
+msgid "下弦月"
+msgstr "Dernier quartier"
+
+msgid "残月"
+msgstr "Dernier croissant"
+
+msgid "细细的"
+msgstr "fine"
+
+msgid "半月"
+msgstr "à demi"
+
+msgid "将满的"
+msgstr "presque pleine"
+
+msgid "满"
+msgstr "pleine"
+
+msgid "刚过满的"
+msgstr "juste après la pleine"
+
+msgid "残"
+msgstr "décroissante"
+
+msgid "外面正在打雷下雨，雨会斜着打在窗上。"
+msgstr "Il y a de l'orage ; la pluie fouette la fenêtre."
+
+msgid "外面在下{what}，雨点砸在玻璃上，路面已经湿得发亮。"
+msgstr "{what} dehors — les gouttes frappent la vitre et la route brille."
+
+msgid "外面飘着{what}，细得几乎看不出雨丝。"
+msgstr "{what} dehors, à peine quelques gouttes."
+
+msgid "外面在下{what}，这种时候最适合发呆。"
+msgstr "{what} dehors — le moment idéal pour rêvasser."
+
+msgid "外面下着{what}，雪花是慢慢飘下来的。"
+msgstr "{what} dehors ; les flocons descendent doucement."
+
+msgid "外面起雾了，远处的屋顶已经看不清。"
+msgstr "Le brouillard est arrivé ; on ne voit plus les toits."
+
+msgid "云很厚，今天的光是匀匀地洒下来的，没有影子。"
+msgstr "Nuages épais aujourd'hui — une lumière uniforme, sans ombres."
+
+msgid "太阳几乎在头顶，{side}边的天空最亮。"
+msgstr "Le soleil est presque au zénith ; le ciel est plus clair au {side}."
+
+msgid "太阳在{side}方，仰角 {alt}°，影子短短的。"
+msgstr "Le soleil est au {side} à {alt}° ; les ombres sont courtes."
+
+msgid "太阳在{side}方只有 {alt}° 高，光斜斜地照进来。"
+msgstr "Le soleil n'est qu'à {alt}° au {side} ; la lumière entre de biais."
+
+msgid "{side}边的天被染成了橘色，这是今天最好的光。"
+msgstr "Le ciel au {side} s'est teinté d'orange — la plus belle lumière du jour."
+
+msgid "天光只剩 {left}。"
+msgstr "Il ne reste que {left} de lumière."
+
+msgid "太阳刚刚离开。"
+msgstr "Le soleil vient de disparaître."
+
+msgid "太阳正在{side}方落到地平线下，{tail}"
+msgstr "Le soleil descend sous l'horizon au {side} ; {tail}"
+
+msgid "暮色最浓的时候，天边还剩一线橘红。"
+msgstr "Au plus fort du crépuscule, un dernier fil orange à l'horizon."
+
+msgid "夜色正在从东边漫上来，第一批星星已经亮了。"
+msgstr "La nuit monte de l'est ; les premières étoiles brillent."
+
+msgid "{side}方挂着{phase}的月亮，天已经黑透了。"
+msgstr "La lune au {side} est {phase} ; le ciel est tout à fait noir."
+
+msgid "天已经黑透，云不多，星星应该看得见。"
+msgstr "Nuit noire, peu de nuages — les étoiles devraient être visibles."
+
+msgid "天已经黑透了，窗外是一片沉下来的夜色。"
+msgstr "Nuit noire — un calme nocturne derrière la fenêtre."
+
+# ---- Codes météo ----
+msgid "晴"
+msgstr "Dégagé"
+
+msgid "大致晴朗"
+msgstr "Plutôt dégagé"
+
+msgid "多云"
+msgstr "Partiellement nuageux"
+
+msgid "阴"
+msgstr "Couvert"
+
+msgid "有雾"
+msgstr "Brouillard"
+
+msgid "雾凇"
+msgstr "Brouillard givrant"
+
+msgid "细微毛毛雨"
+msgstr "Bruine faible"
+
+msgid "毛毛雨"
+msgstr "Bruine"
+
+msgid "密毛毛雨"
+msgstr "Bruine dense"
+
+msgid "冻毛毛雨"
+msgstr "Bruine verglaçante"
+
+msgid "强冻毛毛雨"
+msgstr "Forte bruine verglaçante"
+
+msgid "小雨"
+msgstr "Pluie faible"
+
+msgid "中雨"
+msgstr "Pluie"
+
+msgid "大雨"
+msgstr "Forte pluie"
+
+msgid "冻雨"
+msgstr "Pluie verglaçante"
+
+msgid "强冻雨"
+msgstr "Forte pluie verglaçante"
+
+msgid "小雪"
+msgstr "Faible neige"
+
+msgid "中雪"
+msgstr "Neige"
+
+msgid "大雪"
+msgstr "Forte neige"
+
+msgid "米雪"
+msgstr "Grains de neige"
+
+msgid "阵雨"
+msgstr "Averses"
+
+msgid "强阵雨"
+msgstr "Fortes averses"
+
+msgid "暴阵雨"
+msgstr "Averses violentes"
+
+msgid "阵雪"
+msgstr "Averses de neige"
+
+msgid "强阵雪"
+msgstr "Fortes averses de neige"
+
+msgid "雷阵雨"
+msgstr "Orage"
+
+msgid "雷阵雨伴冰雹"
+msgstr "Orage avec grêle"
+
+msgid "强雷暴伴冰雹"
+msgstr "Fort orage avec grêle"
+
+msgid "未知"
+msgstr "Inconnu"
+
+msgid "雪"
+msgstr "neige"
+
+msgid "暴雨"
+msgstr "Pluie torrentielle"
+
+msgid "弱"
+msgstr "faible"
+
+msgid "中等"
+msgstr "modéré"
+
+msgid "强"
+msgstr "élevé"
+
+msgid "很强"
+msgstr "très élevé"
+
+msgid "极强"
+msgstr "extrême"
+
+# ---- Unités ----
+msgid "°C"
+msgstr "°C"
+
+msgid "°F"
+msgstr "°F"
+
+msgid "mm/时"
+msgstr "mm/h"
+
+msgid "in/h"
+msgstr "in/h"
+
+msgid "km/h"
+msgstr "km/h"
+
+msgid "mph"
+msgstr "mph"
+
+msgid "km"
+msgstr "km"
+
+msgid "mi"
+msgstr "mi"
+
+msgid "hPa"
+msgstr "hPa"
+
+msgid "inHg"
+msgstr "inHg"
+
+# ---- Détails météo ----
+msgid "窗外的天气"
+msgstr "La météo dehors"
+
+msgid "「跟随真实天气」是关着的，画面里只有天文。"
+msgstr "« Suivre la vraie météo » est désactivé ; seul l'astronomie est affiché."
+
+msgid "想让它显示真实的云和雨：菜单 → 跟随真实天气。"
+msgstr "Pour voir les vraies nuages et pluie : menu → Suivre la vraie météo."
+
+msgid "这一天的预报还没问到。"
+msgstr "Pas encore de prévision pour ce jour."
+
+msgid "Open-Meteo 的预报只到 16 天以内；手上这份覆盖的是 {covered}。"
+msgstr "Open-Meteo ne prévoit que 16 jours ; ces données couvrent {covered}."
+
+msgid "把长卷拖远一点、或者过一会儿再看，这一天的云和雨就会补上。"
+msgstr "Faites glisser le ruban plus loin, ou revenez plus tard, et ce jour se complétera."
+
+msgid "还没拿到天气数据。"
+msgstr "Pas encore de données météo."
+
+msgid "天气来自 Open-Meteo（免费、不用账号，只上传经纬度）。"
+msgstr "La météo vient d'Open-Meteo (gratuit, sans compte, seules les coordonnées sont envoyées)."
+
+msgid "网络不通时画面会自动退回纯天文模式，天空依然是对的。"
+msgstr "Hors ligne, l'affichage revient à l'astronomie seule — le ciel reste exact."
+
+msgid "那会儿"
+msgstr "À ce moment"
+
+msgid "当天"
+msgstr "Ce jour"
+
+msgid "{amount}（{what}）"
+msgstr "{amount} ({what})"
+
+msgid "{amount}（{what}）　能见度 {vis}"
+msgstr "{amount} ({what})　visibilité {vis}"
+
+msgid "看的是别的日子，所以只报逐小时的云、天气、气温和降水量；体感、湿度、风是此刻的读数，这里就不写了。"
+msgstr "Vous regardez un autre jour : seuls les nuages, la météo, la température et les précipitations horaires sont indiqués ; ressenti, humidité et vent sont des mesures actuelles et sont omis."
+
+msgid "数据"
+msgstr "Données"
+
+msgid "（逐小时预报）"
+msgstr " (prévisions horaires)"
+
+msgid "（体感 {v}）"
+msgstr " (ressenti {v})"
+
+msgid "（当天最高 / 最低）"
+msgstr " (max / min du jour)"
+
+msgid "（离线，上一次的结果）"
+msgstr " (hors ligne, résultat précédent)"
+
+msgid "{dir}（{deg}°）{speed}"
+msgstr "{dir} ({deg}°) {speed}"
+
+msgid "　阵风 {v}"
+msgstr "　rafales {v}"
+
+msgid "此刻没有"
+msgstr "aucune maintenant"
+
+msgid "能见度 {vis}"
+msgstr "visibilité {vis}"
+
+msgid "更近的几天"
+msgstr "les jours les plus proches"
+
+msgid "{first} ～ {last}"
+msgstr "{first} – {last}"
+
+msgid "太阳、月亮、星星的位置全是本地算的，一点数据都不外传。"
+msgstr "Soleil, lune et étoiles sont calculés localement ; aucune donnée ne sort de cet ordinateur."
+
+msgid "「跟随真实天气」是关着的 · 菜单 → 跟随真实天气"
+msgstr "« Suivre la vraie météo » est désactivé · menu → Suivre la vraie météo"
+
+msgid "正在问一次真实的天气…"
+msgstr "Demande de la vraie météo…"
+
+msgid "上一次还没问完 · 它回来我马上再问一次"
+msgstr "La demande précédente est encore en cours · je redemanderai dès son retour"
+
+msgid "这次没问到天气"
+msgstr "Pas de météo cette fois"
+
+msgid "没问到天气：{err}"
+msgstr "Météo indisponible : {err}"
+
+msgid "网络不通"
+msgstr "réseau indisponible"
+
+msgid "这次没问到（{err}）"
+msgstr "Rien obtenu cette fois ({err})"
+
+msgid "，还是 {time} 那份"
+msgstr ", toujours celle de {time}"
+
+msgid "，还是上一次那份"
+msgstr ", toujours la précédente"
+
+msgid "天气更新于 {time}：{what}"
+msgstr "Météo mise à jour {time} : {what}"
+
+msgid "天气拿到手了：{what}"
+msgstr "Météo reçue : {what}"
+
+msgid "　·　附近几天（{first} ～ {last}）也一起拿回来了"
+msgstr "　·　les jours voisins ({first} – {last}) sont venus aussi"
+
+msgid "{what} {warmth} · 云量 {cloud}%"
+msgstr "{what} {warmth} · nuages {cloud} %"
+
+msgid "「此刻的事实」回来了 · 按空格可以再收起"
+msgstr "La fiche est de retour · Espace la masque à nouveau"
+
+msgid "信息卡收起来了 · 按空格让它回来"
+msgstr "Fiche masquée · Espace la fait revenir"
+
+msgid "信息卡收成一条了 · 按 C 展开"
+msgstr "Fiche réduite · C pour la déplier"
+
+msgid "信息卡展开了 · 每一行都可以点"
+msgstr "Fiche dépliée · chaque ligne est cliquable"
+
+# ---- Fond d'écran ----
+msgid "正在把这扇窗挂到桌面上…"
+msgstr "Mise de cette fenêtre sur le bureau…"
+
+msgid "你换了壁纸，「窗」就不再自动跟着了"
+msgstr "Vous avez changé le fond d'écran ; Chuang a cessé de le suivre"
+
+msgid "检测到桌面壁纸已经换成别的了，所以「窗」停手，不再每 10 秒覆盖它。\n\n想让它继续跟着此刻走：菜单 → 桌面壁纸 → 壁纸跟随此刻。\n想保留刚才那张天空：不用做什么。"
+msgstr "Le fond d'écran a changé pour autre chose ; Chuang s'arrête et ne l'écrasera plus toutes les 10 secondes.\n\nPour continuer à suivre le ciel : menu → Fond d'écran → Faire suivre le ciel.\nPour garder le ciel actuel : ne faites rien."
+
+msgid "壁纸每 {n} 秒跟着此刻换一张（要一直更新，记得把「窗」留在托盘里）"
+msgstr "Le fond d'écran suivra le ciel toutes les {n} secondes (gardez Chuang dans la zone de notification pour qu'il continue)"
+
+msgid "壁纸不再自动更新，现在这张会留着"
+msgstr "Le fond d'écran ne se mettra plus à jour ; celui-ci reste"
+
+msgid "10 秒"
+msgstr "10 s"
+
+msgid "30 秒"
+msgstr "30 s"
+
+msgid "1 分钟"
+msgstr "1 min"
+
+msgid "壁纸会每 {text}跟着此刻换一张"
+msgstr "Le fond d'écran suivra le ciel toutes les {text}"
+
+msgid "壁纸跟随的节奏已设为 {text}"
+msgstr "Rythme du fond d'écran réglé sur {text}"
+
+msgid "壁纸上会带上「此刻的事实」"
+msgstr "Le fond d'écran inclura la fiche"
+
+msgid "壁纸只留下景色"
+msgstr "Le fond d'écran ne garde que la vue"
+
+msgid "壁纸上的信息卡：{text}{note}"
+msgstr "Fiche du fond d'écran : {text}{note}"
+
+msgid "壁纸上会带上「今日天色」长卷"
+msgstr "Le fond d'écran inclura le ruban du jour"
+
+msgid "壁纸不带长卷了"
+msgstr "Le fond d'écran n'inclut plus le ruban"
+
+msgid "还在画，等一下…"
+msgstr "Rendu en cours — un instant…"
+
+msgid "正在画这一天的 96 张天色，约二十秒…"
+msgstr "Rendu de 96 images du ciel du jour, environ vingt secondes…"
+
+msgid "正在画今天的天色 {done}/{total}"
+msgstr "Rendu du ciel du jour {done}/{total}"
+
+msgid "动态壁纸做好了：今天 24 小时会自己走一遍，不开着也有效"
+msgstr "Fond d'écran animé prêt : les 24 h du jour défileront seules, même fermé"
+
+msgid "没有记下你原来的壁纸；可以从「设置 → 外观」里挑一张"
+msgstr "Aucun fond d'origine enregistré ; choisissez-en un dans Paramètres → Apparence"
+
+msgid "壁纸诊断（可以整段复制）"
+msgstr "Diagnostic du fond d'écran (copie intégrale possible)"
+
+# ---- Mises à jour ----
+msgid "正在检查更新…"
+msgstr "Recherche de mises à jour…"
+
+msgid "检查更新失败：网络或 GitHub 接口不可用，稍后会再试"
+msgstr "Échec de la recherche : réseau ou API GitHub indisponible ; nouvel essai plus tard"
+
+msgid "有新版本 {tag}：菜单最上面可以打开发布页"
+msgstr "Nouvelle version {tag} : ouvrez la page des versions en haut du menu"
+
+msgid "已经是最新的 {version}"
+msgstr "Déjà à jour ({version})"
+
+msgid "会自动检查更新（一天一次，只问版本号）"
+msgstr "Recherchera les mises à jour automatiquement (une fois par jour, numéro de version seulement)"
+
+msgid "不再自动检查更新"
+msgstr "Recherche automatique désactivée"
+
+msgid "已经在浏览器里打开了发布页"
+msgstr "La page des versions est ouverte dans le navigateur"
+
+msgid "已跳过 {tag}，下一个版本再提醒"
+msgstr "{tag} ignorée ; rappel à la prochaine version"
+
+msgid "这个版本没有提供 .deb 安装包"
+msgstr "Cette version n'a pas de paquet .deb"
+
+msgid "正在下载 {name}…"
+msgstr "Téléchargement de {name}…"
+
+msgid "正在下载 {name}…（大约几 MB）"
+msgstr "Téléchargement de {name}… (quelques Mo)"
+
+msgid "校验这一步自己出错了：{err}"
+msgstr "L'étape de vérification a elle-même échoué : {err}"
+
+msgid "【没通过校验，先别急着装】"
+msgstr "[Vérification échouée — n'installez pas encore]"
+
+msgid "安装包已经下好并通过校验"
+msgstr "Le paquet est téléchargé et vérifié"
+
+msgid "安装包已经下好了"
+msgstr "Le paquet est téléchargé"
+
+msgid "安装包：{path}\n\n手动安装（复制到终端里跑）：\n    sudo apt-get install -y -- \"{path}\"\n\n或者在菜单里点「下载并安装」，「窗」会自己开一个终端帮你装。"
+msgstr "Paquet : {path}\n\nInstallation manuelle (à coller dans un terminal) :\n    sudo apt-get install -y -- \"{path}\"\n\nOu utilisez « Télécharger et installer » dans le menu : Chuang ouvrira un terminal."
+
+msgid "下载失败"
+msgstr "Échec du téléchargement"
+
+msgid "下载失败：{err}\n\n发布页：{url}"
+msgstr "Échec du téléchargement : {err}\n\nVersions : {url}"
+
+msgid "没找到可下载的安装包，我给你打开发布页"
+msgstr "Aucun paquet téléchargeable ; ouverture de la page des versions"
+
+msgid "上一次安装还没结束，稍等一下…"
+msgstr "L'installation précédente n'est pas terminée — un instant…"
+
+msgid "这次发布里没有 SHA256SUMS 校验文件，没法核对这个包。"
+msgstr "Cette version n'a pas de fichier SHA256SUMS ; le paquet ne peut pas être vérifié."
+
+msgid "下载 SHA256SUMS 失败：{err}"
+msgstr "Échec du téléchargement de SHA256SUMS : {err}"
+
+msgid "SHA256SUMS 里没有 {name} 这一项，没法核对这个包。"
+msgstr "SHA256SUMS ne contient pas {name} ; le paquet ne peut pas être vérifié."
+
+msgid "校验不通过：下载到的文件与发布页上的摘要对不上。\n    期望 {want}\n    实际 {got}"
+msgstr "Vérification échouée : le fichier téléchargé ne correspond pas à l'empreinte publiée.\n    attendu {want}\n    obtenu  {got}"
+
+msgid "没有安装：安装包没通过校验"
+msgstr "Non installé : le paquet n'a pas passé la vérification"
+
+msgid "{why}\n\n安装包已经下载到：\n    {path}\n\n如果你确认这个文件没问题，可以自己手动装：\n    sudo apt-get install -y -- \"{path}\"\n\n发布页：{url}"
+msgstr "{why}\n\nLe paquet est téléchargé dans :\n    {path}\n\nSi vous êtes sûr de ce fichier, installez-le manuellement :\n    sudo apt-get install -y -- \"{path}\"\n\nVersions : {url}"
+
+msgid "下载安装包失败"
+msgstr "Échec du téléchargement du paquet"
+
+msgid "下载 {tag} 的安装包失败：{why}\n\n可以到发布页手动下载：{url}"
+msgstr "Échec du téléchargement du paquet {tag} : {why}\n\nTéléchargement manuel : {url}"
+
+msgid "没有可用的安装方式"
+msgstr "Aucune méthode d'installation disponible"
+
+msgid "没找到终端程序，也没法弹授权框。\n\n安装包已经下载到：\n    {path}\n\n在终端里跑这一行就装好了：\n    sudo apt-get install -y -- \"{path}\""
+msgstr "Aucun terminal trouvé, et aucune boîte d'autorisation possible.\n\nLe paquet est dans :\n    {path}\n\nLancez cette ligne dans un terminal :\n    sudo apt-get install -y -- \"{path}\""
+
+msgid "打不开安装终端"
+msgstr "Impossible d'ouvrir le terminal d'installation"
+
+msgid "启动安装程序失败：{err}\n\n安装包在：{path}\n手动安装：sudo apt-get install -y -- \"{path}\""
+msgstr "Échec du lancement de l'installateur : {err}\n\nPaquet : {path}\nManuel : sudo apt-get install -y -- \"{path}\""
+
+msgid "已经开了个终端在装 {tag}，输入 sudo 密码就好"
+msgstr "Un terminal installe {tag} ; saisissez le mot de passe sudo"
+
+msgid "窗 · Chuang —— 正在安装新版本"
+msgstr "Chuang — installation de la nouvelle version"
+
+msgid "✓ 安装完成。回到「窗」的窗口，它会问你要不要重启。"
+msgstr "✓ Installé. Revenez à la fenêtre Chuang ; elle demandera si vous voulez redémarrer."
+
+msgid "安装失败（退出码 $rc），上面的输出就是原因。"
+msgstr "Échec de l'installation (code $rc) ; la sortie ci-dessus en est la cause."
+
+msgid "按回车关闭这个窗口… "
+msgstr "Appuyez sur Entrée pour fermer cette fenêtre… "
+
+msgid "安装「窗」更新"
+msgstr "Installer la mise à jour de Chuang"
+
+msgid "已经装好 {version} 了"
+msgstr "{version} installée"
+
+msgid "新版本已经装好"
+msgstr "La nouvelle version est installée"
+
+msgid "现在是 {version}。重启「窗」就能用上新版本（当前的窗口会关掉，壁纸最多停一两秒就接上）。"
+msgstr "Vous êtes en {version}. Redémarrez Chuang pour l'utiliser (cette fenêtre se ferme ; le fond d'écran s'interrompt une seconde ou deux)."
+
+msgid "稍后"
+msgstr "Plus tard"
+
+msgid "现在重启"
+msgstr "Redémarrer"
+
+msgid "重启「窗」？"
+msgstr "Redémarrer Chuang ?"
+
+msgid "窗口会关掉再自动打开，壁纸最多停一两秒。"
+msgstr "La fenêtre se fermera puis se rouvrira ; le fond d'écran s'interrompt une seconde ou deux."
+
+msgid "自动重启没成功"
+msgstr "Échec du redémarrage automatique"
+
+msgid "启动新进程失败：{err}\n手动打开一次「窗」就好（终端里敲 chuang）。"
+msgstr "Échec du lancement du nouveau processus : {err}\nOuvrez Chuang une fois à la main (tapez `chuang` dans un terminal)."
+
+# ---- À propos ----
+msgid "{version}（有新版本 {tag}）"
+msgstr "{version} (nouvelle version {tag})"
+
+msgid "把你头顶此刻真实的天空，搬到桌面的一扇窗里。\n\n太阳、月亮、星星的位置由本地天文算法计算，云、雨、雪来自 Open-Meteo 的真实天气。\n没有任何内容离开这台电脑。"
+msgstr "Le vrai ciel au-dessus de vous, dans une fenêtre sur votre bureau.\n\nSoleil, lune et étoiles sont calculés localement ; nuages, pluie et neige viennent d'Open-Meteo. Rien ne quitte cet ordinateur."
+
+msgid "{author}（lsqkk）"
+msgstr "{author} (lsqkk)"
+
+msgid "© 2026 蓝色奇夸克"
+msgstr "© 2026 蓝色奇夸克 (lsqkk)"
+
+msgid "已经在浏览器里打开了作者的主页"
+msgstr "La page de l'auteur est ouverte dans le navigateur"
+
+msgid "[Bug] {version} · "
+msgstr "[Bug] {version} · "
+
+msgid "### 发生了什么\n\n（请把这句换成你看到的现象）\n\n### 怎么复现\n\n1. \n2. \n\n### 环境（自动填好，可删）\n\n"
+msgstr "### Ce qui s'est passé\n\n(Remplacez par ce que vous avez vu)\n\n### Comment reproduire\n\n1. \n2. \n\n### Environnement (rempli automatiquement, supprimable)\n\n"
+
+msgid "已经在浏览器里打开反馈页；把上面两句写清楚就好"
+msgstr "La page de signalement est ouverte ; décrivez ces deux points"
+
+msgid "实时天空之窗"
+msgstr "Une fenêtre en direct sur le ciel"
+
+msgid "把你头顶此刻真实的天空搬到桌面的一扇窗里"
+msgstr "Une petite fenêtre qui montre le vrai ciel au-dessus de vous"
+
+# ---- Diagnostics ----
+msgid "- 版本：{v}"
+msgstr "- Version : {v}"
+
+msgid "- GTK：{v}"
+msgstr "- GTK : {v}"
+
+msgid "- libadwaita：{v}"
+msgstr "- libadwaita : {v}"
+
+msgid "- 会话：{a} / {b}"
+msgstr "- Session : {a} / {b}"
+
+msgid "- 系统：{v}"
+msgstr "- Système : {v}"
+
+msgid "- 托盘：{tray}；壁纸跟随：{auto}"
+msgstr "- Zone de notification : {tray} ; suivi du fond : {auto}"
+
+msgid "可用"
+msgstr "disponible"
+
+msgid "不可用"
+msgstr "indisponible"
+
+msgid "开"
+msgstr "activé"
+
+msgid "关"
+msgstr "désactivé"
+
+msgid "窗 · Chuang {version} 壁纸诊断"
+msgstr "Chuang {version} — diagnostic du fond d'écran"
+
+msgid "本进程 pid={pid}，单实例锁：{state}"
+msgstr "Processus pid={pid}, verrou d'instance unique : {state}"
+
+msgid "持有"
+msgstr "détenu"
+
+msgid "未持有"
+msgstr "non détenu"
+
+msgid "系统里其它「窗」进程：{n} 个"
+msgstr "Autres processus Chuang : {n}"
+
+msgid "代码版本 {version}；dpkg 里装的是 {deb}"
+msgstr "Version du code {version} ; dpkg a {deb}"
+
+msgid "（不是 .deb 安装）"
+msgstr "(pas une installation .deb)"
+
+msgid "壁纸跟随：{auto}（间隔 {interval} 秒）；托盘：{tray}"
+msgstr "Suivi du fond : {auto} (toutes les {interval} s) ; zone : {tray}"
+
+msgid "桌面此刻挂的不是「窗」画的图：{uri}"
+msgstr "Le bureau n'affiche pas une image dessinée par Chuang : {uri}"
+
+msgid "（读不到）"
+msgstr "(illisible)"
+
+msgid "桌面此刻挂的是：{slot}（{age} 秒前写的）"
+msgstr "Le bureau affiche : {slot} (écrit il y a {age} s)"
+
+msgid "另一张 {slot}：{age} 秒前写的"
+msgstr "L'autre fichier {slot} : écrit il y a {age} s"
+
+msgid "桌面显示的是不是最新那张：是"
+msgstr "Le bureau affiche la plus récente : oui"
+
+msgid "桌面显示的是不是最新那张：**不是**（应该顶上 {slot}）"
+msgstr "Le bureau affiche la plus récente : **non** (devrait être {slot})"
+
+msgid "最近一次换图：{age} 秒前 → {state}（{msg}）"
+msgstr "Dernier changement de fond : il y a {age} s → {state} ({msg})"
+
+msgid "成功"
+msgstr "succès"
+
+msgid "失败"
+msgstr "échec"
+
+msgid "最近一次换图：本次启动以来还没有过"
+msgstr "Dernier changement de fond : aucun depuis ce lancement"
+
+msgid "上次真正换过文件名（URI）：{age} 秒前（常态是就地更新正在显示的那张，每 {every} 秒兜底换一次）"
+msgstr "Dernier vrai changement d'URI : il y a {age} s (normalement le fichier affiché est mis à jour sur place ; bascule de secours toutes les {every} s)"
+
+msgid "心跳：本进程共兜住 {n} 次异常"
+msgstr "Battement : {n} exceptions rattrapées dans ce processus"
+
+msgid "；最近一次：{err}"
+msgstr " ; dernière : {err}"
+
+msgid "（如果上面写着「桌面显示的不是最新那张」，那就是桌面没接受新图；如果「最近一次换图」停在很久以前，说明心跳停了。）"
+msgstr "(S'il est écrit que le bureau n'affiche pas la plus récente, il a refusé la nouvelle image ; si le dernier changement date de très longtemps, le battement s'est arrêté.)"
+
+# ---- Lieux ----
+msgid "西安"
+msgstr "Xi'an"
+
+msgid "陕西省"
+msgstr "Shaanxi"
+
+msgid "中国"
+msgstr "Chine"
+
+msgid "重庆"
+msgstr "Chongqing"
+
+msgid "重庆市"
+msgstr "Chongqing"
+
+msgid "哈尔滨"
+msgstr "Harbin"
+
+msgid "黑龙江省"
+msgstr "Heilongjiang"
+
+msgid "乌鲁木齐"
+msgstr "Ürümqi"
+
+msgid "新疆"
+msgstr "Xinjiang"
+
+msgid "香港"
+msgstr "Hong Kong"
+
+msgid "台北"
+msgstr "Taipei"
+
+msgid "东京"
+msgstr "Tokyo"
+
+msgid "日本"
+msgstr "Japon"
+
+msgid "首尔"
+msgstr "Séoul"
+
+msgid "韩国"
+msgstr "Corée du Sud"
+
+msgid "新加坡"
+msgstr "Singapour"
+
+msgid "加尔各答"
+msgstr "Calcutta"
+
+msgid "印度"
+msgstr "Inde"
+
+msgid "迪拜"
+msgstr "Dubaï"
+
+msgid "阿联酋"
+msgstr "Émirats arabes unis"
+
+msgid "伦敦"
+msgstr "Londres"
+
+msgid "英国"
+msgstr "Royaume-Uni"
+
+msgid "巴黎"
+msgstr "Paris"
+
+msgid "法国"
+msgstr "France"
+
+msgid "柏林"
+msgstr "Berlin"
+
+msgid "德国"
+msgstr "Allemagne"
+
+msgid "莫斯科"
+msgstr "Moscou"
+
+msgid "俄罗斯"
+msgstr "Russie"
+
+msgid "纽约"
+msgstr "New York"
+
+msgid "芝加哥"
+msgstr "Chicago"
+
+msgid "丹佛"
+msgstr "Denver"
+
+msgid "旧金山"
+msgstr "San Francisco"
+
+msgid "美国"
+msgstr "États-Unis"
+
+msgid "圣保罗"
+msgstr "São Paulo"
+
+msgid "巴西"
+msgstr "Brésil"
+
+msgid "悉尼"
+msgstr "Sydney"
+
+msgid "澳大利亚"
+msgstr "Australie"
+
+msgid "开罗"
+msgstr "Le Caire"
+
+msgid "埃及"
+msgstr "Égypte"
+
+msgid "格林尼治"
+msgstr "Greenwich"
+
+msgid "{zone} 一带"
+msgstr "la région de {zone}"

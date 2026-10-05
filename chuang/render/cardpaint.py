@@ -19,6 +19,7 @@ import gi
 gi.require_version("Pango", "1.0")
 from gi.repository import Pango  # noqa: E402
 
+from .. import i18n
 from ..scene import Scene, duration_zh
 from .card import CardLayer
 from .paint import (TAU, clamp, draw_icon, draw_text, draw_text_bl, icon_ink_y,
@@ -98,13 +99,16 @@ class CardPaintLayer(CardLayer):
         # 城市名高出 2~3 像素，看着像没摆平。
         cy = y + ymap["head"]
         head_mid = cy + 12 * scale
-        name = scene.location_name or scene.location_label or ""
+        name = i18n.place_label(scene.location_name or scene.location_label or "")
         base_head = ink_baseline(head_mid, name, self.F_CITY * ts,
                                  Pango.Weight.MEDIUM)
         tw, _ = draw_text_bl(cr, name, cx, base_head, self.F_CITY * ts,
                              (240, 244, 252), 0.94, weight=Pango.Weight.MEDIUM)
-        chip_text = f"预览 {scene.when.strftime('%H:%M')}" if scene.preview else "此刻"
-        chip_w = (78 if scene.preview else 46) * scale
+        chip_text = (i18n.tr("预览 {time}").format(time=i18n.clock(scene.when))
+                     if scene.preview else i18n.tr("此刻"))
+        # 宽度按**真实文字**量：译名长短不一（"Preview 21:30" / "Aperçu 21:30"），
+        # 钉死一个数字总有一门语言会被切掉半个词。
+        chip_w = max(40 * scale, self._text_w(chip_text, self.F_LABEL * ts) + 22 * scale)
         tag_h = 19 * scale
         # 有收起箭头的时候，城市名不能压到它底下；壁纸上的卡片没有那颗箭头，
         # 于是这里也不用白白让出 28 像素
@@ -220,8 +224,8 @@ class CardPaintLayer(CardLayer):
             draw_text_bl(cr, sun_text, ix + 15 * scale,
                          ink_baseline(sun_mid, sun_text, 11 * scale),
                          11 * scale, (246, 240, 232), 0.68)
-            tail = (f"还剩 {duration_zh(scene.daylight_left)}"
-                    if scene.daylight_left else "今天已过去")
+            tail = (i18n.tr("还剩 {left}").format(left=duration_zh(scene.daylight_left))
+                    if scene.daylight_left else i18n.tr("今天已过去"))
             draw_text_bl(cr, tail, ax0 + aw,
                          ink_baseline(sun_mid, tail, 11 * scale),
                          11 * scale, (250, 250, 255), 0.74, align="right")
@@ -360,7 +364,10 @@ class CardPaintLayer(CardLayer):
                                   (255, 255, 255), 0.0)
                 # 数值**紧跟在标题后面**（像一张表），只有长到要撞上右边界时才
                 # 退回右对齐——整列都飘在最右边时，眼睛要来回跳着找它。
-                vx = tx + 36 * scale
+                # 数值跟在标题后面：留白按**标题真实的宽度**算（"Sunrise" 比
+                # "日出"宽得多，钉死 36 像素就会叠在一起）。
+                vx = tx + max(36 * scale,
+                              self._text_w(row.label, self.F_LABEL * ts) + 6 * scale)
                 if vx + vw > gx + cw - arrow:
                     vx = max(tx + 20 * scale, gx + cw - vw - arrow)
                 draw_text_bl(cr, row.value, vx, base_c1, self.F_VALUE * ts,

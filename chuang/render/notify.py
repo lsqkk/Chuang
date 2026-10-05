@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time as _time
 
+from .. import i18n
 from ..palette import mix_rgb
 from .core import PainterCore
 from .paint import SILL_Y, clamp, draw_icon, draw_text, rounded_rect
@@ -26,7 +27,7 @@ class NotifyLayer(PainterCore):
         remain = ui.toast_until - _time.time()
         alpha = clamp(min(1.0, remain / 0.6), 0, 1)
         size = clamp(h * 0.020, 12.0, 18.0)
-        text = ui.toast + ("　·　详情" if ui.toast_detail else "")
+        text = ui.toast + (i18n.tr("　·　详情") if ui.toast_detail else "")
         tw, th = draw_text(cr, text, 0, -1000, size, (255, 255, 255), 0.0)
         icon = ui.toast_icon or "info"
         tint = {"check": (150, 226, 168), "warn": (255, 198, 120),
@@ -73,7 +74,8 @@ class NotifyLayer(PainterCore):
         if ui.preview_dt is None:
             ui.chip_rect = (0, 0, 0, 0)
             return
-        text = f"正在预览 {ui.preview_dt.strftime('%H:%M')}　·　点这里回到此刻"
+        text = i18n.tr("正在预览 {time}　·　点这里回到此刻").format(
+            time=i18n.clock(ui.preview_dt))
         size = clamp(h * 0.019, 12.0, 17.0)
         tw, th = draw_text(cr, text, 0, -1000, size, (255, 255, 255), 0.0)
         bw, bh = tw + 36, th + 16

@@ -1,5 +1,5 @@
 # 常用任务：make help 看一眼
-.PHONY: help run city install deb release release-dry screenshots test check clean uninstall
+.PHONY: help run city install deb release release-dry screenshots test check i18n i18n-check clean uninstall
 
 PY ?= python3
 
@@ -10,6 +10,8 @@ help:
 	@echo "  make screenshots  重新生成 README 里的截图"
 	@echo "  make test         跑自动化测试（天文、天气、壁纸、绘制冒烟）"
 	@echo "  make check        语法检查 + 跑测试 + 出一张测试图"
+	@echo "  make i18n         把 po/*.po 编成 chuang/locale/*.mo（改了翻译就跑它）"
+	@echo "  make i18n-check   检查各语言的覆盖率、.mo 是不是最新的"
 	@echo "  make deb          打包 .deb（产物在 packaging/out/）"
 	@echo "  make release      发版：打 tag → CI 打包 → 挂到 Release（packaging/release.sh）"
 	@echo "  make release-dry  发版前的检查（--dry-run，什么都不改）"
@@ -31,9 +33,18 @@ test:
 
 check:
 	$(PY) -m py_compile chuang/*.py chuang/*/*.py tools/*.py chuang-gui
+	$(PY) tools/i18n.py check
 	$(PY) -m unittest discover -s tests -t .
 	$(PY) tools/snapshot.py /tmp/chuang-check.png 18:35 34.34 108.94
 	@echo "✓ 检查通过"
+
+i18n:
+	$(PY) tools/i18n.py compile
+	@echo "✓ 译文已编译进 chuang/locale/"
+
+i18n-check:
+	$(PY) tools/i18n.py check
+	$(PY) tools/i18n.py stats
 
 deb:
 	./packaging/build-deb.sh

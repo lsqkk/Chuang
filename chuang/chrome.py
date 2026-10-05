@@ -24,6 +24,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gtk, GLib  # noqa: E402
 
 from . import actions
+from .i18n import tr as _
 from .mainloop import to_main
 
 CSS = """
@@ -50,7 +51,7 @@ def build(win) -> None:
     win.area.set_focusable(True)
     try:
         win.area.update_property([Gtk.AccessibleProperty.LABEL],
-                                 ["窗外的天空"])
+                                 [_("窗外的天空")])
     except Exception:
         pass
 
@@ -79,23 +80,24 @@ def build(win) -> None:
     # 焦点会跑到"别的画布"上去（菜单弹层关掉之后最典型），见 keys.Keys
     win.keys.attach_handlers()
 
-    win.title_widget = Adw.WindowTitle(title="窗", subtitle="")
+    win.title_widget = Adw.WindowTitle(title=_("窗"), subtitle="")
     header = Adw.HeaderBar()
     header.set_title_widget(win.title_widget)
 
     win.pin_button = Gtk.ToggleButton(icon_name="view-pin-symbolic",
-                                      tooltip_text="让这扇窗一直浮在最上面")
+                                      tooltip_text=_("让这扇窗一直浮在最上面"))
     win.pin_button.set_active(win.config.always_on_top and win.pin_ok)
     if not win.pin_ok:
         win.pin_button.set_sensitive(False)
-        win.pin_button.set_tooltip_text("需要 python3-xlib 才能置顶")
+        win.pin_button.set_tooltip_text(_("需要 python3-xlib 才能置顶"))
     win.pin_button.connect("toggled", win._on_pin_toggled)
     win.pin_button.set_focus_on_click(False)
     header.pack_end(win.pin_button)
 
     win.menu_model = actions.build_menu(win)
     win.menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic",
-                                     menu_model=win.menu_model, tooltip_text="更多")
+                                     menu_model=win.menu_model,
+                                     tooltip_text=_("更多"))
     win.menu_button.set_focus_on_click(False)
     # 菜单弹层关掉之后焦点会留在弹层里那颗小按钮上（见 keys.Keys.focus_canvas），
     # 这一跳也得走 to_main：默认优先级的 idle 会被帧时钟饿死（见 mainloop.py）
