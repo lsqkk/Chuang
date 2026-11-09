@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p _site/data _site/screenshots
-          cp site/index.html site/style.css site/scene.js _site/
+          cp site/index.html site/chuang.css site/scene.js _site/
           cp data/chuang.svg _site/data/
           cp screenshots/{01-dawn,03-daylight,04-golden-hour,06-night-rain,11-wallpaper}.png _site/screenshots/
       - uses: actions/upload-pages-artifact@v4

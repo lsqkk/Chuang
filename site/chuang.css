@@ -5,8 +5,8 @@
   --muted: #656057;
   --line: #d8d0c3;
   --accent: #923f30;
-  --serif: "Noto Serif CJK SC", "Songti SC", STSong, SimSun, serif;
-  --sans: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --serif: "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", STSong, SimSun, serif;
+  --sans: "Noto Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
 }
 
@@ -148,6 +148,7 @@ h2 { font-size: clamp(2.1rem, 4.1vw, 3.6rem); line-height: 1.25; }
   display: grid;
   justify-items: center;
   gap: .12rem;
+  min-height: 44px;
   border: 0;
   border-radius: 4px;
   padding: 0 .15rem .35rem;
@@ -235,13 +236,16 @@ button[aria-pressed="true"] .timeline-tick {
   .wrap { width: calc(100% - 56px); }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 860px) {
   .wrap { width: calc(100% - 36px); }
   .masthead { min-height: 66px; }
   .hero, .wallpaper-inner, .download { grid-template-columns: 1fr; }
   .hero { gap: 2rem; padding-block: 45px; }
   h1 { font-size: clamp(2.35rem, 8.4vw, 3.85rem); }
   .lede { margin-top: 1rem; }
+}
+
+@media (max-width: 650px) {
   .feature-grid { grid-template-columns: 1fr; gap: 1.5rem; margin-top: 1.8rem; }
   .feature-grid article { display: grid; grid-template-columns: 42px 1fr; gap: .25rem .75rem; }
   .feature-icon { grid-row: span 2; }
