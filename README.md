@@ -4,6 +4,8 @@
 
 *A live window to the real sky above you — sun, moon, stars, weather and the shadow on the windowsill, all correct.*
 
+[官方网站](https://chuang.130923.xyz/)
+
 ![窗 · Chuang](screenshots/11-wallpaper.png)
 
 ![license](https://img.shields.io/badge/license-MIT-blue)

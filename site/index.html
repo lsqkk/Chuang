@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f4ee">
+  <meta name="description" content="窗是一款开源的 Linux 桌面应用。看所在地的真实天色，拖动时间预览日出与夜雨，或让天空成为 GNOME 桌面壁纸。">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="窗 Chuang · 把此刻的天空，留在桌面">
+  <meta property="og:description" content="一扇随真实天色变化的桌面窗。">
+  <meta property="og:url" content="https://chuang.130923.xyz/">
+  <meta property="og:image" content="https://chuang.130923.xyz/screenshots/04-golden-hour.png">
+  <meta property="og:image:alt" content="窗应用里的傍晚天色与街景">
+  <link rel="canonical" href="https://chuang.130923.xyz/">
+  <link rel="icon" href="./data/chuang.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./scene.js" defer></script>
+  <title>窗 Chuang · 把此刻的天空，留在桌面</title>
+</head>
+<body id="top">
+  <a class="skip" href="#main">跳到正文</a>
+  <header class="masthead wrap">
+    <a class="brand" href="#top" aria-label="窗 Chuang 首页">
+      <img src="./data/chuang.svg" alt="" width="38" height="38">
+      <strong>窗</strong><span>CHUANG</span>
+    </a>
+    <nav aria-label="主导航">
+      <a href="#sky">窗景</a>
+      <a href="#features">功能</a>
+      <a class="nav-install" href="#download">安装 <span aria-hidden="true">↘</span></a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap" id="sky" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow hero-kicker"><span class="sun-dot" aria-hidden="true"></span> 一扇桌面上的窗 <span class="index-mark">/ 01</span></p>
+        <h1 id="hero-title">把此刻的天空，<br><em>留在桌面。</em></h1>
+        <p class="lede">从清晨的第一缕光，到夜雨里的车灯。打开「窗」，看你所在的地方，此刻是什么天色。</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#download">下载「窗」<span aria-hidden="true">↓</span></a>
+          <a class="text-link" href="https://github.com/lsqkk/Chuang">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="platform">Ubuntu 22.04 <span aria-hidden="true">·</span> GNOME 42 <span aria-hidden="true">·</span> MIT 开源</p>
+      </div>
+
+      <figure class="observatory">
+        <div class="observatory-top">
+          <span class="eyebrow"><span class="frame-mark" aria-hidden="true"></span> 今日天色</span>
+          <span class="mono figure-index">XI’AN / 西安</span>
+        </div>
+        <div class="window-mat">
+          <img id="scene-image" src="./screenshots/04-golden-hour.png" width="1400" height="860" alt="西安傍晚的应用画面，橙色天光映在街道和楼群上" fetchpriority="high">
+        </div>
+        <div class="timeline" id="scene-controls" aria-label="切换窗景" role="group" hidden>
+          <button type="button" aria-pressed="false" data-image="01-dawn.png" data-alt="西安清晨的应用画面，晨光照亮屋顶" data-note="晨光沿着屋顶慢慢铺开。">
+            <span class="timeline-tick"></span><span class="timeline-time">06:40</span><span>清晨</span>
+          </button>
+          <button type="button" aria-pressed="false" data-image="03-daylight.png" data-alt="西安正午的应用画面，云层经过明亮的蓝天" data-note="云层从正午的蓝天掠过。">
+            <span class="timeline-tick"></span><span class="timeline-time">12:40</span><span>正午</span>
+          </button>
+          <button type="button" aria-pressed="true" data-image="04-golden-hour.png" data-alt="西安傍晚的应用画面，橙色天光映在街道和楼群上" data-note="最后一抹暖光掠过街道。">
+            <span class="timeline-tick"></span><span class="timeline-time">18:30</span><span>傍晚</span>
+          </button>
+          <button type="button" aria-pressed="false" data-image="06-night-rain.png" data-alt="西安夜雨中的应用画面，车灯照亮湿润的路面" data-note="雨落下来，路面映出车灯。">
+            <span class="timeline-tick"></span><span class="timeline-time">21:40</span><span>夜雨</span>
+          </button>
+        </div>
+        <figcaption class="figure-caption">
+          <span id="scene-note" aria-live="polite">最后一抹暖光掠过街道。</span>
+          <span>应用画面 · 场景示例</span>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="features wrap" id="features" aria-labelledby="features-title">
+      <div class="section-head">
+        <p class="eyebrow"><span class="index-mark">02 /</span> 窗里的时间</p>
+        <h2 id="features-title">天空有自己的钟。</h2>
+      </div>
+      <div class="feature-grid">
+        <article>
+          <svg class="feature-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M5 33h38M12 33a12 12 0 1 1 24 0M24 6v5M8 13l4 4m28-4-4 4M14 40h20"/></svg>
+          <h3>日月星，按时升起</h3>
+          <p>太阳的位置、月亮的相位和一千六百多颗星星，都按你所在的地点与时刻在本地计算。太阳走到哪儿，窗台和楼房的影子就跟到哪儿。</p>
+        </article>
+        <article>
+          <svg class="feature-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M12 27a6 6 0 0 1 0-12 10 10 0 0 1 19-3 8 8 0 1 1 5 15H12Zm4 6-3 6m12-6-3 6m12-6-3 6"/></svg>
+          <h3>雨落在此刻</h3>
+          <p>联网时跟随 Open-Meteo 的天气数据。从零星细雨到满窗雨幕，雨丝的疏密和速度随降水量变化，雾也会逐渐隐去远处的屋顶。</p>
+        </article>
+        <article>
+          <svg class="feature-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="16"/><path d="M24 13v11l7 5M4 24h8m24 0h8"/></svg>
+          <h3>把时间拨一拨</h3>
+          <p>拖动窗底的「今日天色」，看看日落后还剩多少天光，也能直接跳到某一天的某一刻。按 Esc，回到现在。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="wallpaper" aria-labelledby="wallpaper-title">
+      <div class="wallpaper-inner wrap">
+        <div>
+          <p class="eyebrow"><span class="index-mark">03 /</span> 桌面窗景</p>
+          <h2 id="wallpaper-title">让桌面也有<br>自己的晨昏。</h2>
+          <p>把此刻设成一张壁纸，或让 GNOME 桌面随天色更新。也可以预先生成一整天的动态壁纸，关掉「窗」，桌面依然会从清晨走到夜里。</p>
+        </div>
+        <figure>
+          <img src="./screenshots/11-wallpaper.png" width="1920" height="1080" loading="lazy" decoding="async" alt="GNOME 桌面壁纸示例，深蓝夜空下亮着灯的城市，底部是今日天色长卷">
+          <figcaption><span>GNOME 壁纸示例</span><span class="mono">19:30 / 入夜</span></figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="download wrap" id="download" aria-labelledby="download-title">
+      <div class="download-copy">
+        <p class="eyebrow"><span class="index-mark">04 /</span> 获取应用</p>
+        <h2 id="download-title">给桌面开一扇窗。</h2>
+        <p>面向 Ubuntu 22.04 / GNOME 42。界面支持简体中文、English、日本語和 Français。</p>
+        <a class="button button-primary" href="https://github.com/lsqkk/Chuang/releases/latest">获取 .deb 安装包 <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="install-card">
+        <p class="eyebrow"><span class="index-mark">01.</span> 在 GitHub Releases 下载 .deb</p>
+        <p class="eyebrow"><span class="index-mark">02.</span> 在安装包所在目录执行</p>
+        <div class="command"><code>sudo apt install ./chuang_*_all.deb</code></div>
+        <p class="eyebrow"><span class="index-mark">03.</span> 在应用菜单里搜索「窗」</p>
+        <a class="text-link" href="https://github.com/lsqkk/Chuang#安装">源码安装与依赖 <span aria-hidden="true">↗</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer wrap">
+    <a class="brand" href="#top" aria-label="窗 Chuang，返回顶部">
+      <img src="./data/chuang.svg" alt="" width="34" height="34" loading="lazy">
+      <strong>窗</strong><span>CHUANG</span>
+    </a>
+    <p>蓝色奇夸克 · MIT 开源</p>
+    <div class="footer-links">
+      <a href="https://github.com/lsqkk/Chuang">源代码 <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/lsqkk/Chuang/issues">反馈 <span aria-hidden="true">↗</span></a>
+    </div>
+  </footer>
+</body>
+</html>

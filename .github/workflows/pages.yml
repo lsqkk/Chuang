@@ -1,0 +1,42 @@
+name: 部署官网
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "site/**"
+      - "screenshots/**"
+      - "data/chuang.svg"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/configure-pages@v5
+      - name: 整理静态文件
+        run: |
+          set -euo pipefail
+          mkdir -p _site/data _site/screenshots
+          cp site/index.html site/style.css site/scene.js _site/
+          cp data/chuang.svg _site/data/
+          cp screenshots/{01-dawn,03-daylight,04-golden-hour,06-night-rain,11-wallpaper}.png _site/screenshots/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - uses: actions/deploy-pages@v4
+        id: deployment
